@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: mv_mongo_dev
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data_dev:/data/db
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: mv_mosquitto_dev
+    ports:
+      - "1883:1883"      # MQTT TCP
+      - "9001:9001"      # MQTT WebSockets
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+      - ./mosquitto/certs:/mosquitto/certs
+
+  machine-vision:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    container_name: machine_vision_dev
+    volumes:
+      - ./src:/app/src
+      - ./videos:/app/videos
+    environment:
+      - MQTT_BROKER=mosquitto
+      - MQTT_PORT=1883
+      - MONGO_URI=mongodb://mongo:27017
+    depends_on:
+      - mongo
+      - mosquitto
+
+volumes:
+  mongo_data_dev:

@@ -1,0 +1,17 @@
+# MQTT client
+paho-mqtt>=1.6.1
+
+# Numerical computing
+numpy>=2.0.0
+
+# OpenCV for headless use
+opencv-python-headless>=4.8.1.78
+
+# MongoDB driver
+pymongo>=4.7.1
+
+# Environment variable loader
+python-dotenv>=1.1.0
+
+# Async HTTP/WebSocket server
+aiohttp>=3.9.0
