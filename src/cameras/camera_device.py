@@ -1,7 +1,7 @@
 import cv2
 import asyncio
 import numpy as np
-from aiohttp import web
+from aiohttp import web, client_exceptions
 from pathlib import Path
 import time
 import threading
@@ -88,6 +88,7 @@ class CameraDevice:
         async def mjpeg_handler(request):
             if self.capture is None:
                 return web.Response(status=503)
+            
             response = web.StreamResponse(
                 status=200,
                 reason='OK',
@@ -115,8 +116,20 @@ class CameraDevice:
                     await response.write(data)
                     await response.write(b"\r\n")
                     await asyncio.sleep(0.03)
+            
+            # --- FIX: Gracefully handle client disconnections ---
+            except (client_exceptions.ClientConnectionResetError, BrokenPipeError):
+                print(f"Client disconnected from Camera {self.device_id} stream.")
             except asyncio.CancelledError:
-                print(f"Camera {self.device_id} stream stopped")
+                print(f"Camera {self.device_id} stream stopped by cancellation.")
+            except Exception as e:
+                print(f"An unexpected error in stream handler for Camera {self.device_id}: {e}")
+
+            finally:
+                # Ensure the connection is closed cleanly
+                await response.write_eof()
+                print(f"Handler cleanup complete for Camera {self.device_id}.")
+            
             return response
 
         app = web.Application()
