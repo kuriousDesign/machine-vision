@@ -111,24 +111,30 @@ class CameraDevice:
                         continue
                     data = jpeg.tobytes()
 
+                    # The original place where the error occurred
                     await response.write(b"--frame\r\n")
                     await response.write(b"Content-Type: image/jpeg\r\n\r\n")
                     await response.write(data)
                     await response.write(b"\r\n")
                     await asyncio.sleep(0.03)
             
-            # --- FIX: Gracefully handle client disconnections ---
             except (client_exceptions.ClientConnectionResetError, BrokenPipeError):
-                print(f"Client disconnected from Camera {self.device_id} stream.")
+                # Catch errors during the main streaming loop
+                print(f"Client disconnected from Camera {self.device_id} during stream loop.")
             except asyncio.CancelledError:
                 print(f"Camera {self.device_id} stream stopped by cancellation.")
             except Exception as e:
-                print(f"An unexpected error in stream handler for Camera {self.device_id}: {e}")
+                print(f"An unexpected error occurred during streaming for Camera {self.device_id}: {e}")
 
             finally:
-                # Ensure the connection is closed cleanly
-                await response.write_eof()
-                print(f"Handler cleanup complete for Camera {self.device_id}.")
+                # --- FIX: Ensure write_eof() doesn't cause a new traceback ---
+                try:
+                    await response.write_eof()
+                    print(f"Handler cleanup complete for Camera {self.device_id}.")
+                except (client_exceptions.ClientConnectionResetError, BrokenPipeError):
+                    print(f"Connection already reset, skipping write_eof for Camera {self.device_id}.")
+                except Exception as e:
+                    print(f"Error during final write_eof cleanup: {e}")
             
             return response
 
