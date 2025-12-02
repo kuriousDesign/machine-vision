@@ -1,5 +1,5 @@
 import asyncio
-from mqtt.mqtt_client import MqttClientManager
+from mqtt.mqtt_client import AsyncMqttClientManager
 from cameras.camera_manager import CameraManager
 
 async def main():
@@ -8,8 +8,9 @@ async def main():
     await camera_manager.start()
 
     # Initialize MQTT client
-    mqtt_client = MqttClientManager(camera_manager=camera_manager)
-    await mqtt_client.connect()
+    mqtt_client = AsyncMqttClientManager(camera_manager=camera_manager)
+    print("Connecting to MQTT Broker...")
+    asyncio.create_task(mqtt_client.run())
 
     # Keep service alive
     while True:

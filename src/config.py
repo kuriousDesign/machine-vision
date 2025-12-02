@@ -1,8 +1,11 @@
 import os
 
-MQTT_BROKER = os.getenv("MQTT_BROKER", "mqtt://host.docker.internal:9002")
-MQTT_USERNAME = os.getenv("MQTT_USERNAME", "admin")
-MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "Admin1234")
+MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "localhost")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
 
 VIDEO_PATH = os.getenv("VIDEO_PATH", "/app/videos")
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://mongo:27017")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://root:example@mongodb:27017")
+
+TOPIC_CAMERA_TASKS = "camera/tasks"

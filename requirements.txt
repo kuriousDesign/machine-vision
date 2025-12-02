@@ -1,5 +1,5 @@
-# MQTT client
-paho-mqtt>=1.6.1
+# MQTT client (original dependency is replaced/supplemented by the async wrapper)
+aiomqtt>=2.4.0  # Added for async functionality
 
 # Numerical computing
 numpy>=2.0.0
