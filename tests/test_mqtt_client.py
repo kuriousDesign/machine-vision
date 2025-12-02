@@ -1,60 +1,33 @@
 import asyncio
+import json
 import sys
-# Make sure you import PlatformError for robust Windows handling
-from aiomqtt import Client as AsyncMqttClient, MqttError, PlatformError 
+import os
+from aiomqtt import Client as AsyncMqttClient, MqttError
+
+
+# --- Configuration using Environment Variables/Defaults ---
+MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "192.168.86.24") 
+MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
+MQTT_USERNAME = os.getenv("MQTT_USERNAME", None)
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", None)
+TOPIC_CAMERA_TASKS = os.getenv("TOPIC_CAMERA_TASKS", "camera/tasks")
+# --------------------------------------------------------
+
+import asyncio
 import aiomqtt
 
-# --- Configuration (Replace with your actual config values or use environment variables) ---
-MQTT_BROKER_IP = "192.168.86.24" 
-MQTT_PORT = 1883
-# ... (username/password configs remain the same)
-# -----------------------------------------------------------------------------------------
 
-print(f"Python Version: {sys.version}")
-print(f"aiomqtt Version: {aiomqtt.__version__}")
-
-async def check_mqtt_connection():
-    reconnect_interval = 5  # seconds
-    
-    while True:
-        try:
-            print(f"Attempting to connect to MQTT Broker at {MQTT_BROKER_IP}:{MQTT_PORT}...")
-            
-            # Using 'host' or 'hostname' depending on your specific library install
-            # We'll use 'host' as it's correct for v2.4.0
-            async with AsyncMqttClient(
-                host=MQTT_BROKER_IP, 
-                port=MQTT_PORT,
-            ) as client:
-                print("-" * 40)
-                print(f"✅ SUCCESS: Connected to MQTT Broker at {MQTT_BROKER_IP}:{MQTT_PORT}")
-                print("Connection is active within the 'async with' block.")
-                print("-" * 40)
-
-                # Keep the connection alive for a moment
-                await asyncio.sleep(60) 
-
-        except (MqttError, PlatformError) as err: # Added PlatformError handling
-            print("-" * 40)
-            print(f"❌ FAILED: MQTT connection lost or failed: {err}")
-            print(f"Retrying connection in {reconnect_interval} seconds...")
-            print("-" * 40)
-            await asyncio.sleep(reconnect_interval)
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
-            await asyncio.sleep(reconnect_interval)
+async def main():
+    async with aiomqtt.Client(MQTT_BROKER_IP, port=MQTT_PORT, username=MQTT_USERNAME, password=MQTT_PASSWORD) as client:
+        await client.subscribe("temperature/#")
+        await client.subscribe("humidity/#")
+        async for message in client.messages:
+            if message.topic.matches("humidity/inside"):
+                print("A:", message.payload)
+            if message.topic.matches("+/outside"):
+                print("B:", message.payload)
+            if message.topic.matches("temperature/#"):
+                print("C:", message.payload)
 
 
-if __name__ == "__main__":
-    # >>>>>>>> THE WINDOWS FIX GOES HERE <<<<<<<<
-    # Set the event loop policy specifically for Windows compatibility
-    if sys.platform.startswith("win"):
-        try:
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        except AttributeError:
-            print("Warning: WindowsSelectorEventLoopPolicy not available in this Python version/install. Proceeding with default.")
-            
-    try:
-        asyncio.run(check_mqtt_connection())
-    except KeyboardInterrupt:
-        print("Connection check stopped manually.")
+asyncio.run(main())
