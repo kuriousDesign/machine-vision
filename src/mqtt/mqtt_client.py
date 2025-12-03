@@ -6,7 +6,7 @@ from aiomqtt import Client as AsyncMqttClient, MqttError, ProtocolVersion
 import aiomqtt
 
 from config import MQTT_BROKER_IP, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD, TOPIC_CAMERA_TASKS
-from cameras.camera_manager import CameraManager
+from src.cameras.camera_manager_old import CameraManager
 
 print(f"Python Version: {sys.version}")
 print(f"aiomqtt Version: {aiomqtt.__version__}")

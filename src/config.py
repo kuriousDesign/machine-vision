@@ -9,3 +9,8 @@ VIDEO_PATH = os.getenv("VIDEO_PATH", "/app/videos")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://root:example@mongodb:27017")
 
 TOPIC_CAMERA_TASKS = "camera/tasks"
+
+CAMERA_SERIAL_MAP = {
+    #0: "None",
+    1: "A240125000107517",
+}

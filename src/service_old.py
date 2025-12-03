@@ -1,6 +1,6 @@
 import asyncio
 from mqtt.mqtt_client import AsyncMqttClientManager
-from cameras.camera_manager import CameraManager
+from src.cameras.camera_manager_old import CameraManager
 
 async def main():
     # Initialize cameras

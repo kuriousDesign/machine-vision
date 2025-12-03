@@ -1,5 +1,5 @@
 import asyncio
-from .camera_device import CameraDevice
+from .camera_device_old import CameraDevice
 
 class CameraManager:
     def __init__(self, camera_count: int):
