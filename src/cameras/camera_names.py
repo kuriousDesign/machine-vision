@@ -92,6 +92,18 @@ def get_unique_camera_names_and_indices():
         print(f"An error occurred during camera listing: {e}", file=sys.stderr)
         return []
 
+
+def get_camera_index_by_serial(target_serial):
+    """
+    Given a serial number, returns the corresponding camera index.
+    If not found, returns None
+    """
+    cameras = get_unique_camera_names_and_indices()
+    for camera in cameras:
+        if camera['serial'] == target_serial:
+            return camera['index']
+    return None
+
 if __name__ == "__main__":
     cameras_list = get_unique_camera_names_and_indices()
     

@@ -1,5 +1,5 @@
 import asyncio
-from mqtt.mqtt_client import AsyncMqttClientManager
+from src.mqtt_client import AsyncMqttClientManager
 from src.cameras.camera_manager_old import CameraManager
 
 async def main():

@@ -6,14 +6,14 @@ from aiomqtt import Client as AsyncMqttClient, MqttError, ProtocolVersion
 import aiomqtt
 
 from config import MQTT_BROKER_IP, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD, TOPIC_CAMERA_TASKS
-from src.cameras.camera_manager_old import CameraManager
+#from src.cameras.camera_manager import CameraManager
+#from src.cameras.camera_manager_old import CameraManager
 
-print(f"Python Version: {sys.version}")
-print(f"aiomqtt Version: {aiomqtt.__version__}")
+
 
 class AsyncMqttClientManager:
-    def __init__(self, camera_manager: CameraManager):
-        self.camera_manager = camera_manager
+    def __init__(self):
+        #self.camera_manager = camera_manager
         self.broker_ip = MQTT_BROKER_IP
         self.port = MQTT_PORT
         self.username = MQTT_USERNAME
@@ -96,8 +96,8 @@ class AsyncMqttClientManager:
 # Example of how you might run this new manager in your main application entry point:
 if __name__ == "__main__":
     # You would initialize your CameraManager here
-    dummy_camera_manager = CameraManager(1) 
-    mqtt_manager = AsyncMqttClientManager(dummy_camera_manager)
+    #dummy_camera_manager = CameraManager(1) 
+    mqtt_manager = AsyncMqttClientManager()
     
     try:
         asyncio.run(mqtt_manager.run())
