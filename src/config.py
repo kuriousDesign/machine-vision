@@ -12,6 +12,12 @@ TOPIC_CAMERA_TASKS = "camera/tasks"
 
 CAMERA_MAP = {
     #0: "None",
+    1: "N/A",
+    #2: "6B9CA47E",
+}
+
+CAMERA_MAP_JAKES_HOUSE = {
+    #0: "None",
     1: "A240125000107517",
     2: "6B9CA47E",
 }
