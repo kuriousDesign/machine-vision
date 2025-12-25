@@ -26,6 +26,8 @@ class CameraService:
         self.device_data = Device()
         self.device_data.cfg = self.device_cfg
         self.device_data.sts = self.vis_sts
+        self.device_data.Is.stepNum = int(DeviceStates.ABORTING)
+
 
         for cam in self.cameras.values():
             self.vis_sts.cameraStates.append(CameraStatus())
@@ -34,12 +36,13 @@ class CameraService:
 
         # MQTT client
         self.client = mqtt.Client()
+        self.mqtt_is_connected = False
+        self.is_connecting_to_mqtt = False
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
         self.client.on_message = self._on_message
 
         # Internal
-        self._mqtt_connect_event = threading.Event()
         self._running = True
         self.device_topic = DEVICE_TOPIC
 
@@ -49,27 +52,35 @@ class CameraService:
     # ----------------------------------------------------------------------
     # MQTT CONNECT/DISCONNECT
     # ----------------------------------------------------------------------
-    def connect_mqtt(self):
+    async def connect_mqtt(self):
         """Begin initial connection attempt; Paho will auto-reconnect."""
-        while self._running:
-            try:
-                print(f"[MQTT] Connecting to {self.mqtt_host}:{self.mqtt_port} ...")
-                self.client.connect(self.mqtt_host, self.mqtt_port, keepalive=10)
-                return
-            except Exception as e:
-                print(f"[MQTT] Connect failed: {e}. Retrying in 5 sec...")
-                time.sleep(5)
+   
+        try:
+            print(f"[MQTT] Connecting to {self.mqtt_host}:{self.mqtt_port} ...")
+            # self.client.on_connect = self._on_connect
+            # self.client.on_disconnect = self._on_disconnect
+            # self.client.on_message = self._on_message
+            self.client.connect(self.mqtt_host, self.mqtt_port, keepalive=10)
+            self.is_connecting_to_mqtt = True
+            return
+        except Exception as e:
+            print(f"[MQTT] Connect failed: {e}. Retrying in 1 sec...")
+            time.sleep(1)
 
     def _on_connect(self, client, userdata, flags, rc):
         print(f"[MQTT] Connected to broker")
         self.client.subscribe(SubscriptionTopics.API_HMI_REQ)
         self.client.subscribe(SubscriptionTopics.API_PLC_REQ)
         print(f"[MQTT] Subscribed to {SubscriptionTopics.API_HMI_REQ} and {SubscriptionTopics.API_PLC_REQ}")
-        self._mqtt_connect_event.set()
+        self.mqtt_is_connected = True
+        self.is_connecting_to_mqtt = False
+    
 
     def _on_disconnect(self, client, userdata, rc):
         print(f"[MQTT] Disconnected (rc={rc}). Paho will auto-reconnect.")
-        self._mqtt_connect_event.clear()
+        self.mqtt_is_connected = False
+        self.is_connecting_to_mqtt
+     
 
     # ----------------------------------------------------------------------
     # MESSAGE HANDLER
@@ -130,18 +141,55 @@ class CameraService:
         except Exception as e:
             print(f"[MQTT] Failed to publish state: {e}")
 
+    def set_new_step_num(self, step_num: int):
+        """Sets a new step number for the device."""
+        self.device_data.Is.stepNum = step_num
+        print(f"[SERVICE] stepNum: {step_num}")
+
+    async def run_state_machine(self):
+        """Main service loop."""
+        print("[MQTT] Starting service loop...")
+        last_publish_time_ms = 0
+
+        while self._running :
+            timeNowMs = int(time.time() * 1000)
+            match self.device_data.Is.stepNum:
+                case int(DeviceStates.ABORTING):
+                    self.shutdown()
+                    self.set_new_step_num(int(DeviceStates.INACTIVE))
+
+                case int(DeviceStates.INACTIVE):
+                    self.set_new_step_num(int(DeviceStates.RESETTING))
+
+                case int(DeviceStates.RESETTING):
+                    if self.mqtt_is_connected:
+                        self.set_new_step_num(int(DeviceStates.IDLE))
+                    elif not self.is_connecting_to_mqtt:
+                        await self.connect_mqtt()
+
+                case int(DeviceStates.IDLE):
+                    pass
+                case int(DeviceStates.RUNNING):
+                    pass
+            if timeNowMs - last_publish_time_ms >= 250:
+                last_publish_time_ms = timeNowMs
+                await self.publish_device_data()
+
+            await asyncio.sleep(0.001)  # publish every second
+
     async def publish_device_data(self):
         """Publishes the overall vision status periodically."""
-        while True:
-            try:
-                await self.publish_device_data_bridge_device_update()
-                await self.publish_vision_status()
-                await self.publish_cfg()
+        if not self.mqtt_is_connected:
+            return
+        
+        try:
+            await self.publish_device_data_bridge_device_update()
+            await self.publish_vision_status()
+            await self.publish_cfg()
 
-            except Exception as e:
-                print(f"[MQTT] Error publishing vision status: {e}")
-            await asyncio.sleep(1)
-
+        except Exception as e:
+            print(f"[MQTT] Error publishing vision status: {e}")
+          
     async def publish_device_data_bridge_device_update(self):
         """Broadcasts the device data to the bridge."""
         topic = PublishTopics.UPDATE_DEVICE_DATA.value
@@ -212,13 +260,12 @@ class CameraService:
     # ----------------------------------------------------------------------
     async def run(self):
         """Main async supervisor loop."""
-        self.connect_mqtt()
 
-        # Wait until connected
-        while not self._mqtt_connect_event.is_set():
-            await asyncio.sleep(0.1)
+        # create thread for mqtt connect and handling
+        mqtt_task = asyncio.create_task(self.connect_mqtt())
+        run_state_machine_task = asyncio.create_task(self.run_state_machine())
 
-        print("[MQTT] Service started. MQTT ready.")
+
 
         # Start all camera run-loops
         cam_tasks = [
@@ -226,19 +273,25 @@ class CameraService:
             for cam in self.cameras.values()
         ]
 
-        publish_status_task = asyncio.create_task(self.run_state_machine())
-
-        # Run until cancelled
         try:
-            await asyncio.gather(*cam_tasks, publish_status_task)
+            await asyncio.gather(*cam_tasks, run_state_machine_task, mqtt_task)
         except asyncio.CancelledError:
             pass
         finally:
+            self._running = False
             self.shutdown()
+            
 
     def shutdown(self):
+        """Shuts down the service and its components."""
+        print("[SERVICE] Shutting down...")
+        self.is_connecting_to_mqtt = False
+        self.shutdown_mqtt()
+
+
+    def shutdown_mqtt(self):
         print("[MQTT] Shutting down...")
-        self._running = False
+        
         try:
             self.client.loop_stop()
             self.client.disconnect()
