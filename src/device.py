@@ -91,9 +91,11 @@ class DeviceSts:
     
     recordingLogs: bool = False
 
+
 @dataclass
 class DeviceStates:
-    FAULTED: int = -2
+    ABORTING: int = -3
+    ERROR: int = -2
     KILLED: int = -1
     INACTIVE: int = 0
     RESETTING: int = 50
@@ -101,9 +103,8 @@ class DeviceStates:
     RUNNING: int = 500
     STOPPING: int = 900
     PAUSED: int = 999
-    ABORTING: int = 911
     DONE: int = 1000
-    MANUAL: int = 2000
+    MANUAL: int = 1100
 
 
 @dataclass

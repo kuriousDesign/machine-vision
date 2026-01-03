@@ -21,11 +21,14 @@ DEVICE_TOPIC = "ext_service/" + str(DEVICE_ID)
 
 
 class SubscriptionTopics(str, Enum):
-    API_PLC_REQ = DEVICE_TOPIC + '/api/action_req',
-    API_HMI_REQ = "hmi/action_req/" + str(DEVICE_ID),
+    API_PLC_ACTION_REQ = DEVICE_TOPIC + '/api/action_req',
+    API_HMI_ACTION_REQ = "hmi/action_req/" + str(DEVICE_ID),
+    #API_UPDATE_INTERFACE = DEVICE_TOPIC + '/api/update_interface',
+    MACHINE_VIS_STATUS = "machine/1/4/10/13/sts"
 
 class PublishTopics(str, Enum):
     UPDATE_DEVICE_DATA = "bridge/api/update_device" + '/' + str(DEVICE_ID)
+    UPDATE_DEVICE_INTERFACE = "bridge/api/update_interface" + '/' + str(DEVICE_ID)
 
 # SERIAL NUMBER MAP
 CAMERA_MAP_PRODUCTION = {
@@ -43,6 +46,8 @@ CAMERA_MAP_JAKES_HOUSE = {
 }
 
 CAMERA_MAP = CAMERA_MAP_PRODUCTION if CAMERA_MAP_NAME == "production" else CAMERA_MAP_JAKES_HOUSE
+
+HEARTBEAT_TIMEOUT_MS = 3000  # 3 seconds
 
 @dataclass
 class VisCfg:

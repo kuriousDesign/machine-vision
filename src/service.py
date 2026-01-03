@@ -7,7 +7,6 @@ from config import CAMERA_MAP, MQTT_BROKER_IP, MQTT_PORT
 async def main():
     # Create camera devices
     # for each camera in CAMERA_MAP, create a CameraDevice
-    
     cameras = {}
     for cam_id in CAMERA_MAP.keys():
         camera_serial = CAMERA_MAP[cam_id]

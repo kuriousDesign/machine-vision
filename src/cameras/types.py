@@ -10,6 +10,6 @@ class CameraRecordingState(IntEnum):
 @dataclass
 class CameraStatus:
     isConnected: bool = False
-    recordingState: CameraRecordingState = CameraRecordingState.STOPPED
+    recordingState: int = CameraRecordingState.STOPPED
     isStreaming: bool = False
     videoDeviceNodeString: str = "" #example is "dev/video0"
