@@ -33,7 +33,7 @@ class PublishTopics(str, Enum):
 # SERIAL NUMBER MAP
 CAMERA_MAP_PRODUCTION = {
     #0: "None",
-    1: "N/A",
+    1: "200901010001",
     #2: "6B9CA
     # 
     # 47E",

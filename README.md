@@ -5,8 +5,8 @@ python3.13 -m venv venv
 
 
 # Activate venv
-venv\Scripts\activate   (this is for windows)
 source venv/bin/activate
+venv\Scripts\activate   (this is for windows)
 
 
 # Upgrade pip
