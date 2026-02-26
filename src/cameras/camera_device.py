@@ -57,13 +57,15 @@ DIAG_INTERVAL = 1.0
 # CameraDevice class
 # -----------------------
 class CameraDevice:
-    def __init__(self, id: int, camera_serial: int, stream_port: int = STREAM_PORT, auto_connect: bool = False, auto_start_stream: bool = False):
+    def __init__(self, id: int, camera_name: str, camera_serial: int, stream_port: int = STREAM_PORT, auto_connect: bool = False, auto_start_stream: bool = False):
         self.id = id
         self.camera_index = 0
+        self.camera_name = camera_name
         self.camera_serial = camera_serial
         self.stream_port = stream_port
         self.auto_connect = auto_connect
         self.auto_start_stream = auto_start_stream
+        self.is_plugged_in = False
 
         self.state_callback = None
 
@@ -75,8 +77,8 @@ class CameraDevice:
         self.state.isConnected = False
         self.state.recordingState = CameraRecordingState.STOPPED
         self.state.isStreaming = False 
+        self.state.videoDeviceNodeString = f"not set - waiting for connection"
 
-        
 
         # Shared frame buffer & lock
         self.current_frame = None
@@ -85,6 +87,7 @@ class CameraDevice:
         # Commands (used by keyboard or external control)
         self.start_recording_command = False
         self.stop_recording_command = False
+        self.stop_and_save_recording_command = False
         self.start_streaming_command = False
         self.stop_streaming_command = False
         self.connect_command = False
@@ -115,6 +118,10 @@ class CameraDevice:
         self._run_loop_task: Optional[asyncio.Task] = None
         self._logging_task: Optional[asyncio.Task] = None
 
+        self.print_header = f"[cam_{self.camera_name}]"
+
+        print(f"{self.print_header} Initialized CameraDevice with id {self.id}, serial {self.camera_serial}")
+
 
     def updateState(self):
         if self.state_callback:
@@ -141,7 +148,7 @@ class CameraDevice:
 
             # Validate
             if not self.cap.isOpened():
-                print(f"[cam{self.id}] Failed to open capture device {self.camera_index}")
+                print(f"{self.print_header} Failed to open capture device {self.camera_index}")
                 if self.cap:
                     self.cap.release()
                 self.cap = None
@@ -152,12 +159,13 @@ class CameraDevice:
             actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
             actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            print(f"[cam{self.id}] Opened. Actual resolution: {actual_w}x{actual_h} @ {actual_fps} FPS (requested {REQUESTED_FPS})")
+            print(f"{self.print_header} Opened. Actual resolution: {actual_w}x{actual_h} @ {actual_fps} FPS (requested {REQUESTED_FPS})")
+            self.state.videoDeviceNodeString = f"/dev/video{self.camera_index}"
             self.state.isConnected = True
             return True
 
         except Exception as e:
-            print(f"[cam{self.id}] Exception while opening capture: {e}")
+            print(f"{self.print_header} Exception while opening capture: {e}")
             if self.cap:
                 self.cap.release()
                 self.cap = None
@@ -182,9 +190,9 @@ class CameraDevice:
         try:
             writer = cv2.VideoWriter(filename, fourcc, fps, frame_size)
             if not writer.isOpened():
-                print(f"[cam{self.id}] Record worker: VideoWriter failed to open {filename}")
+                print(f"{self.print_header} Record worker: VideoWriter failed to open {filename}")
                 return
-            print(f"[cam{self.id}] Record worker started (writing to {filename})")
+            print(f"{self.print_header} Record worker started (writing to {filename})")
             while self._rec_running.is_set() or not self.rec_queue.empty():
                 try:
                     frame = self.rec_queue.get(timeout=0.1)
@@ -194,11 +202,11 @@ class CameraDevice:
                     writer.write(frame)
                     self.stats["record_written"] += 1
                 except Exception as e:
-                    print(f"[cam{self.id}] Error writing frame in record worker: {e}")
+                    print(f"{self.print_header} Error writing frame in record worker: {e}")
             writer.release()
-            print(f"[cam{self.id}] Record worker stopped, file finalized.")
+            print(f"{self.print_header} Record worker stopped, file finalized.")
         except Exception as e:
-            print(f"[cam{self.id}] Record worker crashed: {e}")
+            print(f"{self.print_header} Record worker crashed: {e}")
 
     def start_record_worker(self, filename=None):
         if filename:
@@ -207,7 +215,7 @@ class CameraDevice:
             return
         # Determine frame size and fps from current capture if possible
         if not self.cap:
-            print(f"[cam{self.id}] Cannot start recorder; capture not open.")
+            print(f"{self.print_header} Cannot start recorder; capture not open.")
             return False
         frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -228,7 +236,7 @@ class CameraDevice:
         if self._rec_thread:
             self._rec_thread.join(timeout=join_timeout)
             if self._rec_thread.is_alive():
-                print(f"[cam{self.id}] Warning: record worker did not exit within timeout")
+                print(f"{self.print_header} Warning: record worker did not exit within timeout")
             self._rec_thread = None
 
     # -----------------------
@@ -239,7 +247,7 @@ class CameraDevice:
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, "0.0.0.0", self.stream_port)
         await self._site.start()
-        print(f"[cam{self.id}] MJPEG stream available at http://0.0.0.0:{self.stream_port}/stream")
+        print(f"{self.print_header} MJPEG stream available at http://0.0.0.0:{self.stream_port}/stream")
 
     async def stop_http_server(self):
         if self._site:
@@ -305,7 +313,7 @@ class CameraDevice:
                     # Client disconnected
                     break
                 except Exception as e:
-                    print(f"[cam{self.id}] Error writing to client: {e}")
+                    print(f"{self.print_header} Error writing to client: {e}")
                     break
 
                 # Aim for streaming FPS
@@ -325,11 +333,12 @@ class CameraDevice:
             cam_index = index
 
         if cam_index is None:
-            print(f"[cam{self.id}] Cannot connect: camera with serial {self.camera_serial} not found")
+            print(f"{self.print_header} Cannot connect: camera with serial {self.camera_serial} not found")
             return
         if(cam_index != self.camera_index):
-            print(f"[cam{self.id}] Camera index is changing to: /dev/video{cam_index}")
+            print(f"{self.print_header} Camera index is changing to: /dev/video{cam_index}")
         self.camera_index = cam_index
+        self.state.videoDeviceNodeString = f"/dev/video{self.camera_index}"
         self.connect_command = True
 
     # -----------------------
@@ -337,15 +346,13 @@ class CameraDevice:
     # -----------------------
     async def run(self):
         """Main async loop: manages connect state and reads frames."""
-        # Start HTTP server
-        await self.start_http_server()
 
         # Start diagnostics logger
         self._logging_task = asyncio.create_task(self._log_stats())
 
         #self._update_status_task = asyncio.create_task(self._update_status_loop())
 
-        print(f"[cam{self.id}] Entering main run loop. Press 'c' to connect, 'r' to record, 't' to stream, 'q' to quit.")
+        print(f"{self.print_header} Entering main run loop. Press 'c' to connect, 'r' to record, 't' to stream, 'q' to quit.")
 
         lastUpdateTimeMs = time.time() * 1000
 
@@ -366,21 +373,23 @@ class CameraDevice:
                     await self.close_capture()
                     # ensure recorder is stopped
                     if self.state.recordingState == CameraRecordingState.RECORDING:
-                        self.state.recordingState = CameraRecordingState.SAVING
+                        started = self.stop_record_worker()
+                    self.state.recordingState == CameraRecordingState.STOPPED
+      
                 # If connected, read frames
                 if self.state.isConnected and self.cap:
                     # Read frame (this blocks until next frame)
                     try:
                         ret, frame = self.cap.read()
                     except Exception as e:
-                        print(f"[cam{self.id}] Capture read exception: {e}")
+                        print(f"{self.print_header} Capture read exception: {e}")
                         await self.close_capture()
                         await asyncio.sleep(0.1)
                         continue
 
                     if not ret:
                         # failed to grab frame -> try to reconnect
-                        print(f"[cam{self.id}] Failed to read frame; disconnecting.")
+                        print(f"{self.print_header} Failed to read frame; disconnecting.")
                         await self.close_capture()
                         await asyncio.sleep(0.5)
                         self.state.isConnected = False
@@ -392,17 +401,18 @@ class CameraDevice:
                         self.current_frame = frame.copy()
 
                     # Handle start/stop streaming commands (state machine)
-                    if self.start_streaming_command or self.auto_start_stream:
+                    if (self.start_streaming_command or self.auto_start_stream) and not self.state.isStreaming:
                         self.start_streaming_command = False
-                        if not self.state.isStreaming:
-                            self.state.isStreaming = True
-                            print(f"[cam{self.id}] Streaming enabled on /stream")
+                        await self.start_http_server()
+                        self.state.isStreaming = True
+                        print(f"{self.print_header} Streaming enabled on /stream")
 
                     if self.stop_streaming_command:
                         self.stop_streaming_command = False
                         if self.state.isStreaming:
+                            await self.stop_http_server()
                             self.state.isStreaming = False
-                            print(f"[cam{self.id}] Streaming disabled")
+                            print(f"{self.print_header} Streaming disabled")
 
                     # Handle recording commands & queue frames for recorder
                     if self.state.recordingState == CameraRecordingState.STOPPED:
@@ -412,14 +422,14 @@ class CameraDevice:
                             started = self.start_record_worker()
                             if started:
                                 self.state.recordingState = CameraRecordingState.RECORDING
-                                print(f"[cam{self.id}] Recording started to {self._recording_filename}")
+                                print(f"{self.print_header} Recording started to {self._recording_filename}")
                             else:
-                                print(f"[cam{self.id}] Failed to start recording worker")
+                                print(f"{self.print_header} Failed to start recording worker")
                     elif self.state.recordingState == CameraRecordingState.RECORDING:
                         if self.stop_recording_command:
                             self.stop_recording_command = False
                             self.state.recordingState = CameraRecordingState.SAVING
-                            print(f"[cam{self.id}] Stopping recording, finalizing file...")
+                            print(f"{self.print_header} Stopping recording, finalizing file...")
                         else:
                             # enqueue frame non-blocking; drop if full
                             try:
@@ -431,8 +441,18 @@ class CameraDevice:
                         # finalize recording: stop worker and transition to stopped
                         self.stop_record_worker()
                         self.state.recordingState = CameraRecordingState.STOPPED
-                        print(f"[cam{self.id}] Recording saved and worker stopped.")
+                        print(f"{self.print_header} Recording saved and worker stopped.")
+                else:
+                    # Not connected: ensure streaming and recording are stopped
+                    self.stop_streaming_command = False
+                    if self.state.isStreaming:
+                        await self.stop_http_server()
+                        self.state.isStreaming = False
+                        print(f"{self.print_header} Streaming disabled")
 
+                    if self.state.recordingState == CameraRecordingState.RECORDING:
+                        self.state.recordingState = CameraRecordingState.STOPPED
+                        print(f"{self.print_header} Lost connection: stopping")
                 # Tiny sleep to yield to event loop (do not make this large)
                 await asyncio.sleep(0.0005)
 
@@ -447,7 +467,7 @@ class CameraDevice:
                 self._logging_task.cancel()
             await self.stop_http_server()
             await self.close_capture()
-            print(f"[cam{self.id}] Run loop exiting.")
+            print(f"{self.print_header} Run loop exiting.")
 
 
 
@@ -459,7 +479,7 @@ class CameraDevice:
             now = time.time()
             if now - self.stats["last_diag"] >= DIAG_INTERVAL:
                 print(
-                    f"[cam{self.id}] stats (last {DIAG_INTERVAL}s): "
+                    f"{self.print_header} stats (last {DIAG_INTERVAL}s): "
                     f"captured={self.stats['captured']} stream_sent={self.stats['stream_sent']} "
                     f"written={self.stats['record_written']} dropped_rec={self.stats['dropped_for_rec']}"
                 )

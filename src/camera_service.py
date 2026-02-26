@@ -7,6 +7,7 @@ from dacite import from_dict
 import paho.mqtt.client as mqtt
 from dataclasses import asdict
 from cameras.camera_device import CameraDevice
+from cameras.camera_names import *
 from config import *
 
 
@@ -23,13 +24,13 @@ class CameraService:
         self.vis_sts = VisSts()
         self.vis_cfg = VisCfg()
         self.vis_sts.cfg = self.vis_cfg
-        self.vis_sts.cameraStates.append(CameraStatus()) # dummy for index 0
+        #self.vis_sts.cameraStates.append(CameraStatus()) # dummy for index 0
         self.device_data = Device()
         self.device_data.cfg = self.device_cfg
         self.device_data.sts = self.vis_sts
         self.device_data.Is.stepNum = int(DeviceStates.ABORTING)
 
-
+      
         for cam in self.cameras.values():
             self.vis_sts.cameraStates.append(CameraStatus())
             cam.state_callback = self.camera_state_callback
@@ -50,8 +51,15 @@ class CameraService:
         self.device_topic = DEVICE_TOPIC
         self._mqtt_connect_event = threading.Event()
 
+        self.prev_task_req_id = 0
+        self.task_start_time_ms = 0
+
         # Start Paho networking thread
         self.client.loop_start()
+
+            # Start the hardware monitor in its own thread
+        self.hw_thread = threading.Thread(target=self._hardware_monitor_worker, daemon=True)
+        self.hw_thread.start()
 
         self.connect_mqtt()
 
@@ -94,7 +102,57 @@ class CameraService:
         self.mqtt_is_connected = False
         self.is_connecting_to_mqtt = False
         self._mqtt_connect_event.clear()
-     
+
+    def update_cameras_plugged_in_status(self):
+        plugged_cameras_list = get_unique_camera_names_and_indices()
+        
+        # If the tool failed or returned nothing, don't update anything
+        if not plugged_cameras_list and len(self.cameras) > 0:
+            return
+
+        for cam in self.cameras.values():
+            is_plugged_in = any(camera['serial'] == cam.camera_serial for camera in plugged_cameras_list)
+            
+            if is_plugged_in != cam.is_plugged_in:
+                cam.is_plugged_in = is_plugged_in
+                status = "plugged in" if is_plugged_in else "unplugged"
+                print(f"[SERVICE] Camera {cam.camera_name} ({cam.camera_serial}) {status}.")
+                
+                # Logic: If unplugged, force a disconnect command to the device
+                if not is_plugged_in:
+                    cam.disconnect_command = True
+
+    def handTaskRequest(self, ext_service_o: IExtServiceOutputs):
+        """Checks if PLC has requested a task change via the stepNum."""
+        if ext_service_o.taskReqId != 0 and self.prev_task_req_id != ext_service_o.taskReqId:
+            if self.vis_sts.iExtService.i.activeTaskId == 0:
+                self.task_start_time_ms = int(time.time() * 1000)
+                self.vis_sts.iExtService.i.activeTaskId = ext_service_o.taskReqId
+                self.vis_sts.iExtService.i.taskStepNum = 0
+                cam_id = round(ext_service_o.taskParam0)
+                print(f"[SERVICE] New task requested: {visTaskToString(ext_service_o.taskReqId)} for camera {cam_id}")
+                match ext_service_o.taskReqId:
+                    case int(VisTasks.START_RECORDING):
+                        self.cameras[cam_id].start_recording_command = True
+                    case int(VisTasks.STOP_RECORDING):
+                        self.cameras[cam_id].stop_recording_command = True
+                    case int(VisTasks.STOP_AND_SAVE_RECORDING):
+                        self.cameras[cam_id].stop_recording_command = True
+                    case int(VisTasks.CONNECT):
+                        self.cameras[cam_id].connect_command = True
+                    case int(VisTasks.DISCONNECT):
+                        self.cameras[cam_id].disconnect_command = True
+                    case _:
+                        print(f"[SERVICE] Unknown task request: {ext_service_o.taskReqId}")
+            else:
+                print(f"[SERVICE] Task request {visTaskToString(ext_service_o.taskReqId)} ignored because another task {visTaskToString(self.vis_sts.iExtService.i.activeTaskId)} is active.")
+
+        self.prev_task_req_id = ext_service_o.taskReqId
+
+        if time.time() * 1000 - self.task_start_time_ms > 10000 and self.vis_sts.iExtService.i.activeTaskId != 0:  # if task has been active for more than 10 seconds, reset it
+            print(f"[SERVICE] Resetting active task {visTaskToString(self.vis_sts.iExtService.i.activeTaskId)} due to timeout.")
+            self.vis_sts.iExtService.i.activeTaskId = 0
+            self.vis_sts.iExtService.i.taskStepNum = 0
 
     # ----------------------------------------------------------------------
     # MESSAGE HANDLER
@@ -105,14 +163,17 @@ class CameraService:
         Payload example:
         { "cmd": "start_stream" }
         """
+        
+
         topic = msg.topic
         #msg_payload = msg.payload.decode("utf-8")
         try:
             msg = json.loads(msg.payload)
             data = msg.get('payload')
             if data is None:
-                print(f"[MQTT] Missing payload in message on topic {topic}")
-                return
+                #print(f"[MQTT] Missing payload key in message on msg {msg}")
+                # remove topic from msg and then 
+                data = msg
             #print(f"[MQTT] Received message on topic {topic}: {data}")
             pass
         except json.JSONDecodeError:
@@ -125,13 +186,17 @@ class CameraService:
             if data is None:
                 print(f"[MQTT] Empty MACHINE_VIS_STATUS payload")
                 return
-            sts: VisSts = from_dict(data_class=VisSts, data=data)
-            self.vis_sts.iExtService.o = sts.iExtService.o
+            vis_sts_from_plc: VisSts = from_dict(data_class=VisSts, data=data)
+            # only copy the iExtService.o part of the status, since that's where the PLC writes heartbeat and step number
+            self.vis_sts.iExtService.o = vis_sts_from_plc.iExtService.o
+
+            self.handTaskRequest(self.vis_sts.iExtService.o)
 
             #print(f"[MQTT] Updated MACHINE_VIS_STATUS: heartbeatVal={self.vis_sts.iExtService.o.heartbeatVal}")
             return
-
-        actionType = ""
+        
+        if topic == SubscriptionTopics.API_HMI_ACTION_REQ.value:
+            actionType = ""
 
         if actionType == "cmd":
             cmd = data.get("cmd")
@@ -208,11 +273,26 @@ class CameraService:
                     pass
                 case int(DeviceStates.RUNNING):
                     pass
+
             if timeNowMs - last_publish_time_ms >= 1000:
                 last_publish_time_ms = timeNowMs
                 await self.publish_device_data()
 
             await asyncio.sleep(0.001)  # publish every second
+
+    def _hardware_monitor_worker(self):
+        """Periodically check hardware status without blocking MQTT or Cameras."""
+        print("[SERVICE] Hardware monitor thread started.")
+        while True:
+            try:
+                self.update_cameras_plugged_in_status()
+            except Exception as e:
+                print(f"[SERVICE] HW Monitor Error: {e}")
+            
+            # Check every 2-5 seconds. 
+            # Frequent enough to catch a plug/unplug, slow enough to stay stable.
+            time.sleep(2.0) 
+
 
     def checkHeartbeat(self):   
         self.vis_sts.iExtService.i.stepNum = self.device_data.Is.stepNum
@@ -222,7 +302,7 @@ class CameraService:
             if not self.heartbeat_detected:
                 print(f"[MQTT] Heartbeat detected.")
                 self.heartbeat_detected = True
-                self.set_new_step_num(int(DeviceStates.RUNNING))
+                #self.set_new_step_num(int(DeviceStates.RUNNING))
             #print(f"[MQTT] Updated heartbeatVal to {self.vis_sts.iExtService.i.heartbeatVal}")
         elif self.heartbeat_detected and int(time.time() * 1000) - self.last_heartbate_update_ms > HEARTBEAT_TIMEOUT_MS:
             if not self.heartbeat_detected:
@@ -292,6 +372,16 @@ class CameraService:
         # 4. Publish the single, clean JSON string
         self.client.publish(topic, message_json, qos=0)
 
+    async def send_udp_packet(self, packet: bytes, ip: str, port: int):
+        """Sends a UDP packet to the specified IP and port."""
+        loop = asyncio.get_running_loop()
+        transport, protocol = await loop.create_datagram_endpoint(
+            lambda: asyncio.DatagramProtocol(),
+            remote_addr=(ip, port)
+        )
+        transport.sendto(packet)
+        transport.close()
+
     async def publish_vision_status(self):
         #tag = "machine.visSts"
         topic = PublishTopics.UPDATE_DEVICE_DATA.value + '/sts'
@@ -305,6 +395,8 @@ class CameraService:
             "timestamp": int(time.time() * 1000),
             "payload": vis_sts_dict # This keeps the camera config as a nested dictionary, not a string
         }
+
+        #print(f"[MQTT] Publishing vision status with cameraStates={vis_sts_dict['cameraStates']}")
 
         # 3. Encode the *entire* dictionary to a single JSON string *once*
         message_json = json.dumps(message_dict)

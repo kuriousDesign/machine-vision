@@ -22,7 +22,7 @@ DEVICE_TOPIC = "ext_service/" + str(DEVICE_ID)
 
 class SubscriptionTopics(str, Enum):
     API_PLC_ACTION_REQ = DEVICE_TOPIC + '/api/action_req',
-    API_HMI_ACTION_REQ = "hmi/action_req/" + str(DEVICE_ID),
+    #API_HMI_ACTION_REQ = "hmi/action_req/" + str(DEVICE_ID),
     #API_UPDATE_INTERFACE = DEVICE_TOPIC + '/api/update_interface',
     MACHINE_VIS_STATUS = "machine/1/4/10/13/sts"
 
@@ -33,26 +33,63 @@ class PublishTopics(str, Enum):
 # SERIAL NUMBER MAP
 CAMERA_MAP_PRODUCTION = {
     #0: "None",
-    1: "200901010001",
-    #2: "6B9CA
+    0: "200901010001",
+    1: "AN20250306003",
     # 
     # 47E",
 }
 
+def cameraIdToString(camera_id):
+    match camera_id:
+        case 0:
+            return "Short"
+        case 1:
+            return "Tall"
+        case _:
+            return f"Unknown Camera Id {camera_id}"
+
 CAMERA_MAP_JAKES_HOUSE = {
     #0: "None",
-    1: "A240125000107517",
-    2: "6B9CA47E",
+    0: "A240125000107517",
+    1: "6B9CA47E",
 }
 
 CAMERA_MAP = CAMERA_MAP_PRODUCTION if CAMERA_MAP_NAME == "production" else CAMERA_MAP_JAKES_HOUSE
 
 HEARTBEAT_TIMEOUT_MS = 3000  # 3 seconds
 
+MAX_NUM_CAMERAS = 2
+
+class VisTasks(IntEnum):
+    NONE = 0  # do not remove or change this
+    START_RECORDING = 1  # param0: cameraId
+    STOP_RECORDING = 2  # param0: cameraId (this does NOT save the recording)
+    STOP_AND_SAVE_RECORDING = 3  # param0: cameraId, param1: partLocationId
+    CONNECT = 4  # param0: cameraId
+    DISCONNECT = 5  # param0: cameraId
+
+def visTaskToString(task):
+    match task:
+        case VisTasks.NONE:
+            return "None"
+        case VisTasks.START_RECORDING:
+            return "Start Recording"
+        case VisTasks.STOP_RECORDING:
+            return "Stop Recording"
+        case VisTasks.STOP_AND_SAVE_RECORDING:
+            return "Stop and Save Recording"
+        case VisTasks.CONNECT:
+            return "Connect"
+        case VisTasks.DISCONNECT:
+            return "Disconnect"
+        case _:
+            return f"Unknown Task {task}"
+
 @dataclass
 class VisCfg:
-    numCameras: int = len(CAMERA_MAP)
-    cameraSerialNumbers: list[str] = field(default_factory=lambda: [CAMERA_MAP[i] for i in range(1, len(CAMERA_MAP)+1)])
+    numCameras: int = MAX_NUM_CAMERAS
+    cameraSerialNumbers: list[str] = field(default_factory=lambda: [CAMERA_MAP[i] for i in range(0, MAX_NUM_CAMERAS)])
+
 
 @dataclass
 class VisSts(ExtServiceSts):
@@ -66,35 +103,6 @@ class DeviceCfg:
     controllableByHmi: bool = True
     autoReset: bool = True
     ignore: bool = False
-
-
-# TYPE Device :
-# STRUCT
-	
-# 	Is: DeviceSts;
-# 	Errors: DeviceFaultData;
-# 	Warnings: DeviceFaultData;
-# 	Registration: DeviceRegistration;
-# 	Cfg: DeviceCfg;
-# 	instants: DeviceInstants;
-	
-# 	ExecMethod:ProcessData;
-#   Task:ProcessData;
-# 	Process:ProcessData; //read-only
-# 	Script:ProcessData; //read-only
-	
-# 	Mission:ProcessData;
-# 	Settings: DeviceSettings;
-#   	connectionStatus:BOOL;
-	
-# 	//Requests: ARRAY[0.. DeviceConstants.NUM_ACTION_TYPES] OF DeviceActionRequestData; //DEPRECATE SOON: this can be written to outside of the device fb;
-# 	//ActionReq: ApiOpcuaReqData; //written by sender, read by this device (this is internal)
-# 	//ActionResp: ApiOpcuaReqData; //written by this device, read by sender (this is internal)
-# 	ApiOpcua: ApiOpcuaData;
-# 	Udp: UdpData;
-	
-# END_STRUCT
-# END_TYPE
 
 
 @dataclass

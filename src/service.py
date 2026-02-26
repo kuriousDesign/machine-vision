@@ -1,7 +1,7 @@
 import asyncio
 from camera_service import CameraService
 from cameras.camera_device import CameraDevice
-from config import CAMERA_MAP, MQTT_BROKER_IP, MQTT_PORT
+from config import CAMERA_MAP, MQTT_BROKER_IP, MQTT_PORT, cameraIdToString
 
 
 async def main():
@@ -10,7 +10,8 @@ async def main():
     cameras = {}
     for cam_id in CAMERA_MAP.keys():
         camera_serial = CAMERA_MAP[cam_id]
-        cameras[cam_id] = CameraDevice(cam_id, camera_serial, stream_port=8000 + cam_id - 1, auto_connect=True, auto_start_stream=True)
+        camera_name = cameraIdToString(cam_id)
+        cameras[cam_id] = CameraDevice(cam_id, camera_name, camera_serial, stream_port=8000 + cam_id - 1, auto_connect=False, auto_start_stream=True)
         #cameras[cam_id].status_callback = state_callback
     print(f"[SERVICE] Created cameras: {list(cameras.keys())}")
     # Create service

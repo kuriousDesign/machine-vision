@@ -5,6 +5,7 @@ class CameraRecordingState(IntEnum):
     STOPPED = 0
     RECORDING = 1
     SAVING = 2
+    SAVED = 3
 
 # create camera status structure which has isConnected, RecordingState and Stream State
 @dataclass

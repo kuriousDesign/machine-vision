@@ -108,5 +108,7 @@ if __name__ == "__main__":
     cameras_list = get_unique_camera_names_and_indices()
     
     print("Available Cameras:")
+    if len(cameras_list) == 0:
+        print("  No cameras found.")
     for camera in cameras_list:
         print(f"  Index {camera['index']}: Name: {camera['name']}, Serial: {camera['serial']}")
