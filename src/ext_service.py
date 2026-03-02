@@ -15,7 +15,22 @@ class IExtServiceInputs:
     uniqueTaskActiveId: int = 0  # DINT
     activeTaskId: int = 0  # INT
     taskStepNum: int = 0  # INT
+    lastTaskId: int = 0  # INT
 	
+class DeviceCmds(IntEnum):
+    NONE = 0
+    RESET = 1
+    STOP = 2
+    CLEAR = 3
+    KILL = 4
+    PAUSE = 5
+    UNPAUSE = 6
+    START = 7
+    TAKE_CONTROL = 8
+    RELEASE_CONTROL = 9
+    START_RECORDING_LOGS = 10
+    STOP_RECORDING_LOGS = 11
+
 
 @dataclass
 class IExtServiceOutputs:
@@ -26,6 +41,8 @@ class IExtServiceOutputs:
     taskParam1: float = 0.0  # REAL
     taskParam2: float = 0.0  # REAL
     taskParam3: float = 0.0  # REAL
+    execMethodReqId: int = 0  # INT
+    deviceCmdReqId: int = 0  # INT
 
 
 @dataclass

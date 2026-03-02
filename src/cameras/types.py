@@ -1,7 +1,7 @@
 from enum import Enum, IntEnum
 from dataclasses import dataclass, field
 
-class CameraRecordingState(IntEnum):
+class CameraRecordingStates(IntEnum):
     STOPPED = 0
     RECORDING = 1
     SAVING = 2
@@ -10,7 +10,8 @@ class CameraRecordingState(IntEnum):
 # create camera status structure which has isConnected, RecordingState and Stream State
 @dataclass
 class CameraStatus:
+    isPluggedIn: bool = False
     isConnected: bool = False
-    recordingState: int = CameraRecordingState.STOPPED
+    recordingState: int = CameraRecordingStates.STOPPED
     isStreaming: bool = False
     videoDeviceNodeString: str = "" #example is "dev/video0"

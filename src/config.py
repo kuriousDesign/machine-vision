@@ -10,7 +10,7 @@ MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
 
-VIDEO_PATH = os.getenv("VIDEO_PATH", "/app/videos")
+#VIDEO_PATH = os.getenv("VIDEO_PATH", "/app/videos")
 CAMERA_MAP_NAME = os.getenv("CAMERA_MAP_NAME", "production")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://root:example@mongodb:27017")
 DEVICE_ID = 13
@@ -24,7 +24,8 @@ class SubscriptionTopics(str, Enum):
     API_PLC_ACTION_REQ = DEVICE_TOPIC + '/api/action_req',
     #API_HMI_ACTION_REQ = "hmi/action_req/" + str(DEVICE_ID),
     #API_UPDATE_INTERFACE = DEVICE_TOPIC + '/api/update_interface',
-    MACHINE_VIS_STATUS = "machine/1/4/10/13/sts"
+    MACHINE_VIS_STATUS = "machine/1/4/10/13/sts",
+    MACHINE_JOBDATA = "machine/job"
 
 class PublishTopics(str, Enum):
     UPDATE_DEVICE_DATA = "bridge/api/update_device" + '/' + str(DEVICE_ID)
@@ -86,16 +87,26 @@ def visTaskToString(task):
             return f"Unknown Task {task}"
 
 @dataclass
+class CameraCfg:
+    serialNumber: str = ""
+    streamingPort: int = False
+    id: int = 0
+
+@dataclass
 class VisCfg:
     numCameras: int = MAX_NUM_CAMERAS
-    cameraSerialNumbers: list[str] = field(default_factory=lambda: [CAMERA_MAP[i] for i in range(0, MAX_NUM_CAMERAS)])
+    autoConnect: bool = False
+    autoStream: bool = True
+    cameraCfgs: list[CameraCfg] = field(default_factory=lambda: [CameraCfg(serialNumber=CAMERA_MAP[i], id=i, streamingPort=8000 + i) for i in range(0, MAX_NUM_CAMERAS)])
 
-
+MAX_NUM_PLUGGED_IN_CAMERAS = 5
 @dataclass
 class VisSts(ExtServiceSts):
     cfg : VisCfg = field(default_factory=VisCfg)
     cameraStates: list[CameraStatus] = field(default_factory=list)
     isRecording: bool = False
+    allDisconnected: bool = False
+    pluggedInSerialNumbers:list[str] = field(default_factory=lambda: ["" for _ in range(MAX_NUM_PLUGGED_IN_CAMERAS)])
 
 @dataclass
 class DeviceCfg:

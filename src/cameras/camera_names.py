@@ -11,6 +11,7 @@ def get_camera_serial(camera_index):
     try:
         # Command to run: udevadm info --name=/dev/videoX
         cmd = ["udevadm", "info", "--name", device_path]
+        #cmd = ["lsusb"]
         
         # FIX: Use capture_output=True ONLY. This captures both stdout and stderr.
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -85,8 +86,15 @@ def get_unique_camera_names_and_indices():
 
         return final_camera_list
 
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        print("Error: Required command-line tools (v4l2-ctl or udevadm) not found or failed.", file=sys.stderr)
+    except FileNotFoundError as e:
+        print(f"Error: Required command-line tool not found: {e.filename}. Ensure v4l2-ctl is installed.", file=sys.stderr)
+        return []
+    except subprocess.CalledProcessError as e:
+        if e.stderr.strip().startswith("Cannot open device /dev/video0"):
+            #print("Error: No cameras found or /dev/video0 cannot be opened.", file=sys.stderr)
+            pass
+        else:
+            print(f"Error: v4l2-ctl command failed with exit code {e.returncode}: {e.stderr.strip() if e.stderr else 'No error details available'}", file=sys.stderr)
         return []
     except Exception as e:
         print(f"An error occurred during camera listing: {e}", file=sys.stderr)

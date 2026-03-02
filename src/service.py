@@ -1,17 +1,20 @@
 import asyncio
 from camera_service import CameraService
 from cameras.camera_device import CameraDevice
-from config import CAMERA_MAP, MQTT_BROKER_IP, MQTT_PORT, cameraIdToString
+from config import CAMERA_MAP, MQTT_BROKER_IP, MQTT_PORT, VisCfg, cameraIdToString
 
 
 async def main():
     # Create camera devices
     # for each camera in CAMERA_MAP, create a CameraDevice
     cameras = {}
-    for cam_id in CAMERA_MAP.keys():
-        camera_serial = CAMERA_MAP[cam_id]
+    vis_cfg = VisCfg()
+    for cam_cfg in vis_cfg.cameraCfgs:
+        cam_id = cam_cfg.id
+        camera_serial = cam_cfg.serialNumber
         camera_name = cameraIdToString(cam_id)
-        cameras[cam_id] = CameraDevice(cam_id, camera_name, camera_serial, stream_port=8000 + cam_id - 1, auto_connect=False, auto_start_stream=True)
+        stream_port = cam_cfg.streamingPort
+        cameras[cam_id] = CameraDevice(cam_id, camera_name, camera_serial, stream_port=stream_port, auto_connect=vis_cfg.autoConnect, auto_start_stream=vis_cfg.autoStream)
         #cameras[cam_id].status_callback = state_callback
     print(f"[SERVICE] Created cameras: {list(cameras.keys())}")
     # Create service

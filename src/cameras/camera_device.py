@@ -26,20 +26,23 @@ from typing import Optional
 from dataclasses import dataclass
 from cameras.camera_names import get_camera_index_by_serial
 from cameras.types import *
-
+import subprocess
 # -----------------------
 # Configuration
 # -----------------------
 CAMERA_INDEX = 2                    # camera device index (v4l2 / Windows device number)
-OUTPUT_FILENAME = "output_video.mp4"
+
 REQUESTED_FPS = 30.0
 CAPTURE_WIDTH = 1920
 CAPTURE_HEIGHT = 1080
 
 # Recording settings
 RECORD_FOURCC = cv2.VideoWriter_fourcc(*"mp4v")
+#RECORD_FOURCC = cv2.VideoWriter_fourcc(*'x264')   # If libx264 is built into OpenCV
+#RECORD_FOURCC = cv2.VideoWriter_fourcc(*'avc1') 
 REC_QUEUE_MAXSIZE = 12              # bounded queue for frames to record (drop when full)
-
+RECORDINGS_DIR = "/opt/recordings"
+TEMP_RECORDING_DIR = os.path.join(RECORDINGS_DIR, "temp")
 # Streaming settings (lighter than recording)
 STREAM_TARGET_WIDTH = 1280
 STREAM_JPEG_QUALITY = 60            # 0-100
@@ -57,7 +60,7 @@ DIAG_INTERVAL = 1.0
 # CameraDevice class
 # -----------------------
 class CameraDevice:
-    def __init__(self, id: int, camera_name: str, camera_serial: int, stream_port: int = STREAM_PORT, auto_connect: bool = False, auto_start_stream: bool = False):
+    def __init__(self, id: int, camera_name: str, camera_serial: int, stream_port: int, auto_connect: bool = False, auto_start_stream: bool = False):
         self.id = id
         self.camera_index = 0
         self.camera_name = camera_name
@@ -65,7 +68,11 @@ class CameraDevice:
         self.stream_port = stream_port
         self.auto_connect = auto_connect
         self.auto_start_stream = auto_start_stream
-        self.is_plugged_in = False
+
+        self.temp_filename = TEMP_RECORDING_DIR + f"/live_recording_cam{self.id}.mp4"
+        self.temp_stopped_filename = TEMP_RECORDING_DIR + f"/stopped_recording_cam{self.id}.mp4"
+        self.save_filename = "unspecified_filename.mp4"
+     
 
         self.state_callback = None
 
@@ -75,7 +82,7 @@ class CameraDevice:
         # State flags
         self.state = CameraStatus()
         self.state.isConnected = False
-        self.state.recordingState = CameraRecordingState.STOPPED
+        self.state.recordingState = CameraRecordingStates.STOPPED
         self.state.isStreaming = False 
         self.state.videoDeviceNodeString = f"not set - waiting for connection"
 
@@ -93,11 +100,13 @@ class CameraDevice:
         self.connect_command = False
         self.disconnect_command = False
 
+        self.save_requested = False
+
         # Recording queue & worker
         self.rec_queue: "queue.Queue" = queue.Queue(maxsize=REC_QUEUE_MAXSIZE)
         self._rec_thread: Optional[threading.Thread] = None
         self._rec_running = threading.Event()
-        self._recording_filename = OUTPUT_FILENAME
+        self._recording_filename = None
 
         # Stats
         self.stats = {
@@ -162,6 +171,7 @@ class CameraDevice:
             print(f"{self.print_header} Opened. Actual resolution: {actual_w}x{actual_h} @ {actual_fps} FPS (requested {REQUESTED_FPS})")
             self.state.videoDeviceNodeString = f"/dev/video{self.camera_index}"
             self.state.isConnected = True
+            print(f"{self.print_header} Camera connected: {self.state.videoDeviceNodeString}")
             return True
 
         except Exception as e:
@@ -174,6 +184,7 @@ class CameraDevice:
 
     async def close_capture(self):
         """Close capture and cleanup."""
+        print(f"{self.print_header} Closing camera capture.")
         self.state.isConnected = False
         if self.cap:
             try:
@@ -187,7 +198,9 @@ class CameraDevice:
     # -----------------------
     def _rec_worker(self, filename, fourcc, fps, frame_size):
         """Background thread: consume frames from rec_queue and write via VideoWriter."""
+        
         try:
+            self.save_requested = False
             writer = cv2.VideoWriter(filename, fourcc, fps, frame_size)
             if not writer.isOpened():
                 print(f"{self.print_header} Record worker: VideoWriter failed to open {filename}")
@@ -203,14 +216,55 @@ class CameraDevice:
                     self.stats["record_written"] += 1
                 except Exception as e:
                     print(f"{self.print_header} Error writing frame in record worker: {e}")
+            print(f"{self.print_header} Record worker is stopping")
             writer.release()
-            print(f"{self.print_header} Record worker stopped, file finalized.")
+            if self.save_requested:
+                converted = self.save_filename
+            else:
+                # save in temp sub directory with "stopped_" prefix
+                converted = self.temp_stopped_filename
+
+            print(f"{self.print_header} Converting to browser-friendly codec and saved as: {converted}")
+
+            if os.path.exists(converted):
+                print(f"{self.print_header} Overwriting existing file: {converted}")
+
+            # Set this to True to see the ffmpeg output, False to hide it
+            print_subprocess_info = False
+
+            # If False, redirect output to DEVNULL so it doesn't clutter your terminal
+            output_dest = None if print_subprocess_info else subprocess.DEVNULL
+
+            process_info = subprocess.run([
+                'ffmpeg', '-y', '-i', filename,
+                '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
+                '-movflags', '+faststart',
+                converted
+            ], stdout=output_dest, stderr=output_dest, text=True)
+
+            # Check if ffmpeg process was successful
+            if process_info.returncode != 0:
+                print(f"{self.print_header} FFmpeg conversion failed for file: {converted}: {process_info.stderr}")
+            else:
+                print(f"{self.print_header} FFmpeg conversion succeeded")
+                print(f"{self.print_header} File saved at: {converted}")
+
+            os.remove(filename)
+            self.save_filename = "unspecified_filename.mp4"
+            print(f"{self.print_header} Record worker stopped")
+
         except Exception as e:
             print(f"{self.print_header} Record worker crashed: {e}")
 
+
     def start_record_worker(self, filename=None):
-        if filename:
-            self._recording_filename = filename
+        if not TEMP_RECORDING_DIR:
+            # Use temp file in recordings folder for live recording
+            temp_dir = os.path.join(RECORDINGS_DIR, "temp")
+            os.makedirs(temp_dir, exist_ok=True)
+        
+      
+        self._recording_filename = self.temp_filename
         if self._rec_thread and self._rec_thread.is_alive():
             return
         # Determine frame size and fps from current capture if possible
@@ -364,17 +418,20 @@ class CameraDevice:
                     self.updateState()
 
                 # Handle connect/disconnect commands
-                if (self.connect_command or self.auto_connect) and not self.state.isConnected:
+                if (self.connect_command or self.auto_connect):
                     self.connect_command = False
-                    await self.open_capture()
+                    if not self.state.isConnected:
+                        await self.open_capture()
 
-                if self.disconnect_command and self.state.isConnected:
+                if self.disconnect_command:
                     self.disconnect_command = False
-                    await self.close_capture()
-                    # ensure recorder is stopped
-                    if self.state.recordingState == CameraRecordingState.RECORDING:
-                        started = self.stop_record_worker()
-                    self.state.recordingState == CameraRecordingState.STOPPED
+                    if self.state.isConnected:
+                        print(f"{self.print_header} Disconnect command received")
+                        await self.close_capture()
+                        # ensure recorder is stopped
+                        if self.state.recordingState == CameraRecordingStates.RECORDING:
+                            started = self.stop_record_worker()
+                        self.state.recordingState == CameraRecordingStates.STOPPED
       
                 # If connected, read frames
                 if self.state.isConnected and self.cap:
@@ -401,11 +458,13 @@ class CameraDevice:
                         self.current_frame = frame.copy()
 
                     # Handle start/stop streaming commands (state machine)
-                    if (self.start_streaming_command or self.auto_start_stream) and not self.state.isStreaming:
+                    if (self.start_streaming_command or self.auto_start_stream):
                         self.start_streaming_command = False
-                        await self.start_http_server()
-                        self.state.isStreaming = True
-                        print(f"{self.print_header} Streaming enabled on /stream")
+                        if not self.state.isStreaming:
+                            self.start_streaming_command = False
+                            await self.start_http_server()
+                            self.state.isStreaming = True
+                            print(f"{self.print_header} Streaming enabled on /stream")
 
                     if self.stop_streaming_command:
                         self.stop_streaming_command = False
@@ -415,43 +474,62 @@ class CameraDevice:
                             print(f"{self.print_header} Streaming disabled")
 
                     # Handle recording commands & queue frames for recorder
-                    if self.state.recordingState == CameraRecordingState.STOPPED:
-                        if self.start_recording_command:
-                            self.start_recording_command = False
+                    if self.start_recording_command:
+                        self.start_recording_command = False
+                        if self.state.recordingState == CameraRecordingStates.STOPPED or self.state.recordingState == CameraRecordingStates.SAVED:
                             # Initialize recorder worker
                             started = self.start_record_worker()
                             if started:
-                                self.state.recordingState = CameraRecordingState.RECORDING
+                                self.state.recordingState = CameraRecordingStates.RECORDING
                                 print(f"{self.print_header} Recording started to {self._recording_filename}")
                             else:
                                 print(f"{self.print_header} Failed to start recording worker")
-                    elif self.state.recordingState == CameraRecordingState.RECORDING:
-                        if self.stop_recording_command:
-                            self.stop_recording_command = False
-                            self.state.recordingState = CameraRecordingState.SAVING
-                            print(f"{self.print_header} Stopping recording, finalizing file...")
-                        else:
-                            # enqueue frame non-blocking; drop if full
-                            try:
-                                self.rec_queue.put_nowait(frame.copy())
-                            except queue.Full:
-                                self.stats["dropped_for_rec"] += 1
 
-                    elif self.state.recordingState == CameraRecordingState.SAVING:
+                    if self.stop_recording_command or self.stop_and_save_recording_command:
+                        if self.stop_recording_command and self.state.recordingState == CameraRecordingStates.RECORDING or self.state.recordingState == CameraRecordingStates.SAVED:
+                            # Stop recording without saving: discard worker immediately
+                            self.save_requested = False
+                            self.stop_record_worker()
+                            self.state.recordingState = CameraRecordingStates.STOPPED
+                            print(f"{self.print_header} Recording stopped without saving.")
+                        elif self.stop_and_save_recording_command and self.state.recordingState == CameraRecordingStates.RECORDING:
+                            self.state.recordingState = CameraRecordingStates.SAVING
+                            print(f"{self.print_header} Stopping recording, finalizing file...")
+
+                        self.stop_recording_command = False
+                        self.stop_and_save_recording_command = False
+
+                    if self.state.recordingState == CameraRecordingStates.RECORDING:
+                        # enqueue frame non-blocking; drop if full
+                        try:
+                            self.rec_queue.put_nowait(frame.copy())
+                        except queue.Full:
+                            self.stats["dropped_for_rec"] += 1
+
+                    elif self.state.recordingState == CameraRecordingStates.SAVING:
                         # finalize recording: stop worker and transition to stopped
+                        self.save_requested = True
                         self.stop_record_worker()
-                        self.state.recordingState = CameraRecordingState.STOPPED
+                        self.state.recordingState = CameraRecordingStates.SAVED
                         print(f"{self.print_header} Recording saved and worker stopped.")
+                       
                 else:
                     # Not connected: ensure streaming and recording are stopped
                     self.stop_streaming_command = False
+                    self.start_streaming_command = False
+                    self.start_recording_command = False
+                    self.start_recording_command = False
+                    self.stop_and_save_recording_command = False
+                    self.stop_recording_command = False
+
                     if self.state.isStreaming:
                         await self.stop_http_server()
                         self.state.isStreaming = False
                         print(f"{self.print_header} Streaming disabled")
 
-                    if self.state.recordingState == CameraRecordingState.RECORDING:
-                        self.state.recordingState = CameraRecordingState.STOPPED
+                    if self.state.recordingState == CameraRecordingStates.RECORDING or self.state.recordingState == CameraRecordingStates.SAVING:
+                        self.stop_record_worker()
+                        self.state.recordingState = CameraRecordingStates.STOPPED
                         print(f"{self.print_header} Lost connection: stopping")
                 # Tiny sleep to yield to event loop (do not make this large)
                 await asyncio.sleep(0.0005)
@@ -461,7 +539,7 @@ class CameraDevice:
             pass
         finally:
             # Cleanup
-            if self.state.recordingState == CameraRecordingState.RECORDING:
+            if self.state.recordingState == CameraRecordingStates.RECORDING:
                 self.stop_record_worker()
             if self._logging_task:
                 self._logging_task.cancel()
