@@ -84,7 +84,7 @@ class CameraDevice:
         self.state.isConnected = False
         self.state.recordingState = CameraRecordingStates.STOPPED
         self.state.isStreaming = False 
-        self.state.videoDeviceNodeString = f"not set - waiting for connection"
+        self.state.videoDeviceNodeString = "not set - waiting for connection"
 
 
         # Shared frame buffer & lock
@@ -180,6 +180,7 @@ class CameraDevice:
                 self.cap.release()
                 self.cap = None
             self.state.isConnected = False
+            self.state.videoDeviceNodeString = "not set - waiting for connection"
             return False
 
     async def close_capture(self):
