@@ -1,18 +1,26 @@
 from enum import Enum
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 from device import *
 from cameras.types import *
 from ext_service import *
 
+# Load .env from parent directory
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+MQTT_FULL_URI = os.getenv("MQTT_LOCAL_BROKER_URI", "ws://localhost:9002/mqtt")
+
 MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "localhost")
+print(f"MQTT_BROKER_IP: {MQTT_BROKER_IP}")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
 
 #VIDEO_PATH = os.getenv("VIDEO_PATH", "/app/videos")
 CAMERA_MAP_NAME = os.getenv("CAMERA_MAP_NAME", "production")
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://root:example@mongodb:27017")
+MONGO_URI = os.getenv("MONGO_URI")
 DEVICE_ID = 13
 
 DEVICE_TOPIC = "ext_service/" + str(DEVICE_ID)
@@ -34,8 +42,8 @@ class PublishTopics(str, Enum):
 # SERIAL NUMBER MAP
 CAMERA_MAP_PRODUCTION = {
     #0: "None",
-    1: "AN20250306003",
-    0: "200901010001",
+    0: "AN20250306003",
+    1: "200901010001",
    
     # 
     # 47E",

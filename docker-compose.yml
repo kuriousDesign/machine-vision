@@ -7,6 +7,9 @@ services:
     container_name: machine_vision
     network_mode: host
     privileged: true
+    restart: unless-stopped
+    env_file: .env
+    
     volumes:
       - ./src:/app/src
       - /opt/recordings:/opt/recordings

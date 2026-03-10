@@ -1,7 +1,8 @@
+from config import MQTT_BROKER_IP, MQTT_PORT, VisCfg, cameraIdToString
 import asyncio
 from camera_service import CameraService
 from cameras.camera_device import CameraDevice
-from config import CAMERA_MAP, MQTT_BROKER_IP, MQTT_PORT, VisCfg, cameraIdToString
+
 
 
 async def main():

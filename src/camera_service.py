@@ -110,6 +110,11 @@ class CameraService:
         self._mqtt_connect_event.clear()
 
     def update_cameras_plugged_in_status(self):
+        # if any cameras are connected, do not update the plugged in status, to avoid overwriting with bad data from the tool
+        for cam in self.cameras.values():
+            if cam.state.isConnected:
+                return
+
         plugged_cameras_list = get_unique_camera_names_and_indices()
         
         # If the tool failed or returned nothing, don't update anything
@@ -130,13 +135,15 @@ class CameraService:
             is_plugged_in = any(camera['serial'] == cam.camera_serial for camera in plugged_cameras_list)
           
             if is_plugged_in != self.vis_sts.cameraStates[cam.id].isPluggedIn:
-                self.vis_sts.cameraStates[cam.id].isPluggedIn = is_plugged_in
+                
                 status = "plugged in" if is_plugged_in else "unplugged"
                 print(f"[SERVICE] Camera {cam.camera_name} ({cam.camera_serial}) {status}.")
                 
                 # Logic: If unplugged, force a disconnect command to the device
                 if not is_plugged_in:
                     cam.disconnect_command = True
+
+            self.vis_sts.cameraStates[cam.id].isPluggedIn = is_plugged_in
 
     def handleTaskRequest(self, ext_service_o: IExtServiceOutputs):
         """Checks if PLC has requested a task change via the stepNum."""
