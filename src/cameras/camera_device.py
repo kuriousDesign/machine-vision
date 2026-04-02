@@ -221,13 +221,19 @@ class CameraDevice:
             writer.release()
             if self.save_requested:
                 converted = self.save_filename
-            else:
-                # save in temp sub directory with "stopped_" prefix
-                converted = self.temp_stopped_filename
+                
+                if os.path.exists(converted):
+                    # append file name with letter instead of overwriting
+                    letter = 'a'  
+                    while os.path.exists(converted.replace(".mp4", f"_{letter}.mp4")):
+                        letter = chr(ord(letter) + 1)
+                    converted = converted.replace(".mp4", f"_{letter}.mp4")
+                    print(f"{self.print_header} Overwriting existing file: {converted}")
 
             print(f"{self.print_header} Converting to browser-friendly codec and saved as: {converted}")
 
             if os.path.exists(converted):
+                # append file name with letter instead of overwriting
                 print(f"{self.print_header} Overwriting existing file: {converted}")
 
             # Set this to True to see the ffmpeg output, False to hide it

@@ -304,6 +304,21 @@ class CameraService:
         #convert ms after 1970 to local string with  don't use seconds or ms
         start_time_str = job.setupStartTime
         #format like this: YYYY_MM_DD_HHMM where HH is military time
+        job_start_str= "Job_" + job.jobName
+        #job_name_str = "Job_" + job.jobName
+        subfolder = os.path.join(RECORDINGS_DIR, "TubeType_" + job.tubeTypeString, job_start_str, "Batch_" + str(job.activeBatchNumber).zfill(3))
+        os.makedirs(subfolder, exist_ok=True)
+
+        save_filename = os.path.join(subfolder, f"Tube{part_location_id:02d}.mp4")
+        return save_filename
+
+    def build_save_filename_DEPRECATED(self, job: JobData, part_location_id: int):
+        """Builds the save filename based on the job data."""
+
+        # saved videos or stored in RECORDINGS_DIR in subfolders based on job.TubeTypeString, job SetupTime, job ActiveBatchNumber and part_location_id
+        #convert ms after 1970 to local string with  don't use seconds or ms
+        start_time_str = job.setupStartTime
+        #format like this: YYYY_MM_DD_HHMM where HH is military time
         job_start_str= "SetupStart_" + time.strftime('%Y-%m-%d_%H%M', time.localtime(start_time_str / 1000))
         #job_name_str = "Job_" + job.jobName
         subfolder = os.path.join(RECORDINGS_DIR, "TubeType_" + job.tubeTypeString, job_start_str, "Batch_" + str(job.activeBatchNumber).zfill(3))

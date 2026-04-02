@@ -24,5 +24,12 @@ services:
     #   - MONGO_URI=mongodb://mongo:27017
 
 
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
 volumes:
   mongo_data_dev:
