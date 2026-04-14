@@ -265,10 +265,8 @@ class CameraDevice:
 
 
     def start_record_worker(self, filename=None):
-        if not TEMP_RECORDING_DIR:
-            # Use temp file in recordings folder for live recording
-            temp_dir = os.path.join(RECORDINGS_DIR, "temp")
-            os.makedirs(temp_dir, exist_ok=True)
+        # Ensure temp recording directory exists before opening VideoWriter.
+        os.makedirs(TEMP_RECORDING_DIR, exist_ok=True)
         
       
         self._recording_filename = self.temp_filename

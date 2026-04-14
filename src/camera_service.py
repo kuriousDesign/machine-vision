@@ -8,7 +8,7 @@ from unittest import case
 from dacite import from_dict
 import paho.mqtt.client as mqtt
 from dataclasses import asdict
-from cameras.camera_device import RECORDINGS_DIR, CameraDevice, CameraRecordingStates
+from cameras.camera_device import RECORDINGS_DIR, TEMP_RECORDING_DIR, CameraDevice, CameraRecordingStates
 from cameras.camera_names import *
 from config import *
 from machine import JobData, convert_JobData_ULINT_to_int
@@ -166,7 +166,20 @@ class CameraService:
                     case int(VisTasks.STOP_AND_SAVE_RECORDING):
                         part_location_id = round(ext_service_o.taskParam1)
                         self.part_location_id = part_location_id
-                        self.cameras[cam_id].save_filename = self.build_save_filename(self.job, part_location_id)
+                        try:
+                            self.cameras[cam_id].save_filename = self.build_save_filename(self.job, part_location_id)
+                        except PermissionError as e:
+                            fallback_subfolder = os.path.join(
+                                TEMP_RECORDING_DIR,
+                                "saved",
+                                "TubeType_" + self.job.tubeTypeString,
+                                "Job_" + self.job.jobName,
+                                "Batch_" + str(self.job.activeBatchNumber).zfill(3),
+                            )
+                            os.makedirs(fallback_subfolder, exist_ok=True)
+                            fallback_filename = os.path.join(fallback_subfolder, f"Tube{part_location_id:02d}.mp4")
+                            self.cameras[cam_id].save_filename = fallback_filename
+                            print(f"[SERVICE] Save path permission denied ({e}). Falling back to {fallback_filename}")
                         self.cameras[cam_id].stop_and_save_recording_command = True
                     case int(VisTasks.CONNECT):
                         self.cameras[cam_id].connect_command = True
@@ -226,12 +239,16 @@ class CameraService:
                     if data is None:
                         print(f"[MQTT] Empty MACHINE_JOBDATA payload")
                         return
+                    if not isinstance(data, dict):
+                        print(f"[MQTT] Invalid MACHINE_JOBDATA payload type: {type(data).__name__}")
+                        return
                     # ULINT comes as an array from the PLC, multiple tags of job data (anythign iwth time)
                     #converted_data = JobData(data).convert_ULINT_to_int()
                     # convert ULINT fields to int
-                    converted_data = convert_JobData_ULINT_to_int(data)
+                    #converted_data = convert_JobData_ULINT_to_int(data)
+               
 
-                    self.job = from_dict(data_class=JobData, data=converted_data)
+                    self.job = from_dict(data_class=JobData, data=data)
                     # print startTime
                     #print(f"[MQTT] Updated MACHINE_JOBDATA: setupStartTime={self.job.setupStartTime}")
                     #print(f"[MQTT] Updated MACHINE_JOBDATA: jobName={self.job.jobName}, lotQty={self.job.lotQty}")
@@ -302,7 +319,7 @@ class CameraService:
 
         # saved videos or stored in RECORDINGS_DIR in subfolders based on job.TubeTypeString, job SetupTime, job ActiveBatchNumber and part_location_id
         #convert ms after 1970 to local string with  don't use seconds or ms
-        start_time_str = job.setupStartTime
+        #start_time_str = job.setupStartTime
         #format like this: YYYY_MM_DD_HHMM where HH is military time
         job_start_str= "Job_" + job.jobName
         #job_name_str = "Job_" + job.jobName
@@ -312,20 +329,6 @@ class CameraService:
         save_filename = os.path.join(subfolder, f"Tube{part_location_id:02d}.mp4")
         return save_filename
 
-    def build_save_filename_DEPRECATED(self, job: JobData, part_location_id: int):
-        """Builds the save filename based on the job data."""
-
-        # saved videos or stored in RECORDINGS_DIR in subfolders based on job.TubeTypeString, job SetupTime, job ActiveBatchNumber and part_location_id
-        #convert ms after 1970 to local string with  don't use seconds or ms
-        start_time_str = job.setupStartTime
-        #format like this: YYYY_MM_DD_HHMM where HH is military time
-        job_start_str= "SetupStart_" + time.strftime('%Y-%m-%d_%H%M', time.localtime(start_time_str / 1000))
-        #job_name_str = "Job_" + job.jobName
-        subfolder = os.path.join(RECORDINGS_DIR, "TubeType_" + job.tubeTypeString, job_start_str, "Batch_" + str(job.activeBatchNumber).zfill(3))
-        os.makedirs(subfolder, exist_ok=True)
-
-        save_filename = os.path.join(subfolder, f"Tube{part_location_id:02d}.mp4")
-        return save_filename
 
     def monitorActiveTask(self):
         """Monitors the active task and updates the state accordingly."""
@@ -336,15 +339,15 @@ class CameraService:
             case int(VisTasks.NONE):
                 pass
             case int(VisTasks.START_RECORDING):
-                task_was_successful =self.cameras[cam_id].state.recordingState = CameraRecordingStates.RECORDING
+                task_was_successful = self.cameras[cam_id].state.recordingState == CameraRecordingStates.RECORDING
             case int(VisTasks.STOP_RECORDING):
-                task_was_successful =self.cameras[cam_id].state.recordingState = CameraRecordingStates.STOPPED
+                task_was_successful = self.cameras[cam_id].state.recordingState == CameraRecordingStates.STOPPED
             case int(VisTasks.STOP_AND_SAVE_RECORDING):
-                task_was_successful =self.cameras[cam_id].state.recordingState = CameraRecordingStates.SAVED
+                task_was_successful = self.cameras[cam_id].state.recordingState == CameraRecordingStates.SAVED
             case int(VisTasks.CONNECT):
-                task_was_successful =self.cameras[cam_id].state.isConnected
+                task_was_successful = self.cameras[cam_id].state.isConnected
             case int(VisTasks.DISCONNECT):
-                task_was_successful =not self.cameras[cam_id].state.isConnected
+                task_was_successful = not self.cameras[cam_id].state.isConnected
             case _:
                 print(f"[SERVICE] Unknown Active Task Id: {self.vis_sts.iExtService.i.activeTaskId}")
 
