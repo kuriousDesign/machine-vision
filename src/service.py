@@ -3,8 +3,6 @@ import asyncio
 from camera_service import CameraService
 from cameras.camera_device import CameraDevice
 
-
-
 async def main():
     # Create camera devices
     # for each camera in CAMERA_MAP, create a CameraDevice

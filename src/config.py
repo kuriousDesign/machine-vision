@@ -1,74 +1,54 @@
 from enum import Enum
 import os
+import sys
 from pathlib import Path
 from dataclasses import dataclass, field
 from device import *
 from cameras.types import *
 from ext_service import *
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from machine_cfg import MachineIds, getMachineCfg
+
 # Load .env from parent directory
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
+load_dotenv(ROOT_DIR / ".env")
+
 
 MQTT_FULL_URI = os.getenv("MQTT_LOCAL_BROKER_URI", "ws://localhost:9002/mqtt")
-
 MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "localhost")
 print(f"MQTT_BROKER_IP: {MQTT_BROKER_IP}")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
+RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/opt/recordings")
+MAX_NUM_CAMERAS = 2
+MAX_NUM_PLUGGED_IN_CAMERAS = 5
 
-#VIDEO_PATH = os.getenv("VIDEO_PATH", "/app/videos")
-CAMERA_MAP_NAME = os.getenv("CAMERA_MAP_NAME", "production")
-MONGO_URI = os.getenv("MONGO_URI")
-DEVICE_ID = 13
+HEARTBEAT_TIMEOUT_MS = 3000  # 3 seconds
 
+# GET MACHINE CONFIG FROM ENV
+MACHINE_ID = os.getenv("MACHINE_ID", "UNKNOWN_MACHINE")
+MACHINE_CFG = getMachineCfg(MachineIds(MACHINE_ID))
+NUM_CAMERAS = MACHINE_CFG.numCameras
+DEVICE_ID = MACHINE_CFG.deviceId
 DEVICE_TOPIC = "ext_service/" + str(DEVICE_ID)
 
-# Create string enum for subscripton topics
 
+def cameraIdToString(camera_id):
+    return MACHINE_CFG.cameraCfgs[camera_id].name if 0 <= camera_id < len(MACHINE_CFG.cameraCfgs) else f"Unknown Camera Id {camera_id}"
 
 class SubscriptionTopics(str, Enum):
     API_PLC_ACTION_REQ = DEVICE_TOPIC + '/api/action_req',
-    #API_HMI_ACTION_REQ = "hmi/action_req/" + str(DEVICE_ID),
-    #API_UPDATE_INTERFACE = DEVICE_TOPIC + '/api/update_interface',
     MACHINE_VIS_STATUS = "machine/1/4/10/13/sts",
     MACHINE_JOBDATA = "machine/job"
 
 class PublishTopics(str, Enum):
     UPDATE_DEVICE_DATA = "bridge/api/update_device" + '/' + str(DEVICE_ID)
     UPDATE_DEVICE_INTERFACE = "bridge/api/update_interface" + '/' + str(DEVICE_ID)
-
-# SERIAL NUMBER MAP
-CAMERA_MAP_PRODUCTION = {
-    #0: "None",
-    0: "200901010001",
-    1: "200901010001",
-   
-    # 
-    # 47E",
-}
-
-def cameraIdToString(camera_id):
-    match camera_id:
-        case 0:
-            return "Short"
-        case 1:
-            return "Tall"
-        case _:
-            return f"Unknown Camera Id {camera_id}"
-
-CAMERA_MAP_JAKES_HOUSE = {
-    #0: "None",
-    0: "A240125000107517",
-    1: "6B9CA47E",
-}
-
-CAMERA_MAP = CAMERA_MAP_PRODUCTION if CAMERA_MAP_NAME == "production" else CAMERA_MAP_JAKES_HOUSE
-
-HEARTBEAT_TIMEOUT_MS = 3000  # 3 seconds
-
-MAX_NUM_CAMERAS = 2
 
 class VisTasks(IntEnum):
     NONE = 0  # do not remove or change this
@@ -95,6 +75,8 @@ def visTaskToString(task):
         case _:
             return f"Unknown Task {task}"
 
+
+# DO NOT CHANGE: THESE ARE COUPLED TO PLC CLASSES
 @dataclass
 class CameraCfg:
     serialNumber: str = ""
@@ -106,9 +88,9 @@ class VisCfg:
     numCameras: int = MAX_NUM_CAMERAS
     autoConnect: bool = False
     autoStream: bool = True
-    cameraCfgs: list[CameraCfg] = field(default_factory=lambda: [CameraCfg(serialNumber=CAMERA_MAP[i], id=i, streamingPort=8000 + i) for i in range(0, MAX_NUM_CAMERAS)])
+    cameraCfgs: list[CameraCfg] = field(default_factory=lambda: [CameraCfg(serialNumber=MACHINE_CFG.cameraCfgs[i].serialNumber, id=i, streamingPort=8000 + i) for i in range(0, MAX_NUM_CAMERAS)])
 
-MAX_NUM_PLUGGED_IN_CAMERAS = 5
+
 @dataclass
 class VisSts(ExtServiceSts):
     cfg : VisCfg = field(default_factory=VisCfg)
@@ -123,7 +105,6 @@ class DeviceCfg:
     controllableByHmi: bool = True
     autoReset: bool = True
     ignore: bool = False
-
 
 @dataclass
 class Device:

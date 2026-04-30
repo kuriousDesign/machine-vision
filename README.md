@@ -1,23 +1,19 @@
-
-# Dev outside of container
-# Install the engine first
+# SETTING UP FOR DEVELOPMENT
+## Install venv tools
 sudo apt-get update && sudo apt-get install -y python3-bpfcc bpfcc-tools libbpfcc-dev linux-headers-$(uname -r)
 
+## Create venv using Python 3.12 
+python3.12 -m venv venv (Ubuntu)
+py -3.12 -m venv venv (Windows)
 
-
-# Create venv using Python 3.13
-py -3.13 -m venv venv
-# Create venv using Python 3.13 using ubuntu
-python3.13 -m venv venv
-
-
-# Activate venv
-source venv/bin/activate
+## Activate venv
+source venv/bin/activate (Ubuntu)
 venv\Scripts\activate   (this is for windows)
 
-
-# Upgrade pip
+## Upgrade pip
 pip install --upgrade pip
+pip install setuptools
 
-# Install your requirements
+## Install your requirements
 pip install -r requirements.txt
+
