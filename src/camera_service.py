@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from enum import Enum
 import json
 from re import match
@@ -178,7 +179,11 @@ class CameraService:
                                 "Batch_" + str(self.job.activeBatchNumber).zfill(3),
                             )
                             os.makedirs(fallback_subfolder, exist_ok=True)
-                            fallback_filename = os.path.join(fallback_subfolder, f"Tube{part_location_id:02d}.mp4")
+                            fallback_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                            fallback_filename = os.path.join(
+                                fallback_subfolder,
+                                f"Tube{part_location_id:02d}_{fallback_timestamp}.mp4",
+                            )
                             self.cameras[cam_id].save_filename = fallback_filename
                             print(f"[SERVICE] Save path permission denied ({e}). Falling back to {fallback_filename}")
                         self.cameras[cam_id].stop_and_save_recording_command = True
@@ -327,7 +332,11 @@ class CameraService:
         subfolder = os.path.join(RECORDINGS_DIR, "TubeType_" + job.tubeTypeString, job_start_str, "Batch_" + str(job.activeBatchNumber).zfill(3))
         os.makedirs(subfolder, exist_ok=True)
 
-        save_filename = os.path.join(subfolder, f"Tube{part_location_id:02d}.mp4")
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        save_filename = os.path.join(
+            subfolder,
+            f"Tube{part_location_id:02d}_{timestamp}.mp4",
+        )
         return save_filename
 
 

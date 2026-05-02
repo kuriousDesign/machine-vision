@@ -11,6 +11,7 @@ Combined single-file camera service:
 """
 
 import asyncio
+from datetime import datetime
 from enum import IntEnum
 import threading
 import time
@@ -136,6 +137,27 @@ class CameraDevice:
         if self.state_callback:
             self.state_callback(self.id, self.state)
 
+    def _resolve_unique_save_filename(self, filename: str) -> str:
+        if not os.path.exists(filename):
+            return filename
+
+        directory, basename = os.path.split(filename)
+        stem, extension = os.path.splitext(basename)
+        tube_prefix = stem.split("_")[0]
+
+        while True:
+            refreshed_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            candidate = os.path.join(
+                directory,
+                f"{tube_prefix}_{refreshed_timestamp}{extension}",
+            )
+
+            if not os.path.exists(candidate):
+                print(
+                    f"{self.print_header} Save target exists, using refreshed timestamp: {candidate}",
+                )
+                return candidate
+
     # -----------------------
     # Capture & device control
     # -----------------------
@@ -220,15 +242,7 @@ class CameraDevice:
             print(f"{self.print_header} Record worker is stopping")
             writer.release()
             if self.save_requested:
-                converted = self.save_filename
-                
-                if os.path.exists(converted):
-                    # append file name with letter instead of overwriting
-                    letter = 'a'  
-                    while os.path.exists(converted.replace(".mp4", f"_{letter}.mp4")):
-                        letter = chr(ord(letter) + 1)
-                    converted = converted.replace(".mp4", f"_{letter}.mp4")
-                    print(f"{self.print_header} Overwriting existing file: {converted}")
+                converted = self._resolve_unique_save_filename(self.save_filename)
 
             print(f"{self.print_header} Converting to browser-friendly codec and saved as: {converted}")
 
