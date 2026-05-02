@@ -115,6 +115,7 @@ class CameraService:
             if cam.state.isConnected:
                 return
 
+        #print(f"[SERVICE] Updating plugged in cameras list...")
         plugged_cameras_list = get_unique_camera_names_and_indices()
         
         # If the tool failed or returned nothing, don't update anything

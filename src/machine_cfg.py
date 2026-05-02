@@ -16,7 +16,7 @@ class MachineCfg:
     cameraCfgs: list[MachineCameraCfg]
 
 class MachineIds(str, Enum):
-    TUBELINER_002551 = "002551_TUBELINER"
+    TUBELINER_002551 = "TUBELINER_002551"
     JAKES_THINKPAD = "JAKES_THINKPAD"
 
 def getMachineCfg(machine_id: MachineIds) -> MachineCfg:
@@ -27,8 +27,8 @@ def getMachineCfg(machine_id: MachineIds) -> MachineCfg:
                 deviceId=13,
                 numCameras=2,
                 cameraCfgs=[
-                    MachineCameraCfg(serialNumber="123456", name="Short", id=0),
-                    MachineCameraCfg(serialNumber="789012", name="Tall", id=1)
+                    MachineCameraCfg(serialNumber="200901010001", name="Short", id=0),
+                    MachineCameraCfg(serialNumber="200901010001", name="Tall", id=1)
                 ]
             )   
         case MachineIds.JAKES_THINKPAD:
