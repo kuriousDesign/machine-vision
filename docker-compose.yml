@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: .devcontainer/Dockerfile
       network: host  # <--- THIS IS THE FIX for the build hang
-    container_name: machine_vision
+    container_name: machine-vision
     network_mode: host
     privileged: true
     user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"

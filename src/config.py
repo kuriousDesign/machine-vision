@@ -43,7 +43,7 @@ def cameraIdToString(camera_id):
 
 class SubscriptionTopics(str, Enum):
     API_PLC_ACTION_REQ = DEVICE_TOPIC + '/api/action_req',
-    MACHINE_VIS_STATUS = "machine/1/4/10/13/sts",
+    MACHINE_VIS_STATUS = MACHINE_CFG.visionStsTopic
     MACHINE_JOBDATA = "machine/job"
 
 class PublishTopics(str, Enum):
@@ -85,10 +85,10 @@ class CameraCfg:
 
 @dataclass
 class VisCfg:
-    numCameras: int = MAX_NUM_CAMERAS
+    numCameras: int = MACHINE_CFG.numCameras
     autoConnect: bool = False
     autoStream: bool = True
-    cameraCfgs: list[CameraCfg] = field(default_factory=lambda: [CameraCfg(serialNumber=MACHINE_CFG.cameraCfgs[i].serialNumber, id=i, streamingPort=8000 + i) for i in range(0, MAX_NUM_CAMERAS)])
+    cameraCfgs: list[CameraCfg] = field(default_factory=lambda: [CameraCfg(serialNumber=MACHINE_CFG.cameraCfgs[i].serialNumber, id=i, streamingPort=8000 + i) for i in range(0, MACHINE_CFG.numCameras)])
 
 
 @dataclass
