@@ -546,6 +546,8 @@ class CameraService:
     async def publish_vision_status(self):
         #tag = "machine.visSts"
         topic = PublishTopics.UPDATE_DEVICE_DATA.value + '/sts'
+        self.vis_sts.iExtService.i.flipBit = not self.vis_sts.iExtService.i.flipBit
+
             # 1. Get the vis_sts object as a standard Python dictionary
         vis_sts_dict = asdict(self.vis_sts)
         #print(f"[MQTT] Publishing vision status with heartbeatVal={vis_sts_dict['iExtService']['i']['heartbeatVal']}")

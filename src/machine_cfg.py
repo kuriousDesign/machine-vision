@@ -49,7 +49,8 @@ def getMachineCfg(machine_id: MachineIds) -> MachineCfg:
             return MachineCfg(
                 machineName=MachineIds.SAW_002251.value,
                 deviceId=13,
-                visionStsTopic= "machine/1/13/sts",
+                visionStsTopic= "machine/1/4/10/13/sts",
+                #visionStsTopic= "machine/1/13/sts", REVERT BACK TO THIS LATER
                 numCameras=1,
                 cameraCfgs=[
                     MachineCameraCfg(serialNumber="88817FAF", name="Benchtop", id=0)

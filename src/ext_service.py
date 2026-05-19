@@ -9,6 +9,7 @@ class ExtServiceCfg:
 
 @dataclass
 class IExtServiceInputs:
+    flipBit: bool = False  # BOOL
     heartbeatVal: int = 0  # USINT
     stepNum: int = 0  # INT
     errorId: int = 0  # INT
