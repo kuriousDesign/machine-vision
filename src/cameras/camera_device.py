@@ -123,6 +123,8 @@ class CameraDevice:
         self._last_rec_wait_log_ms = 0.0
         self._active_ffmpeg_log_path: Optional[str] = None
         self._last_ffmpeg_progress_line = ""
+        self._capture_fps_estimate: Optional[float] = None
+        self._last_capture_frame_time: Optional[float] = None
 
         # Stats
         self.stats = {
@@ -286,6 +288,8 @@ class CameraDevice:
             actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
             actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self._capture_fps_estimate = None
+            self._last_capture_frame_time = None
             print(f"{self.print_header} Opened. Actual resolution: {actual_w}x{actual_h} @ {actual_fps} FPS (requested {REQUESTED_FPS})")
             self.state.videoDeviceNodeString = f"/dev/video{self.camera_index}"
             self.state.isConnected = True
@@ -305,12 +309,26 @@ class CameraDevice:
         """Close capture and cleanup."""
         print(f"{self.print_header} Closing camera capture.")
         self.state.isConnected = False
+        self._capture_fps_estimate = None
+        self._last_capture_frame_time = None
         if self.cap:
             try:
                 self.cap.release()
             except Exception:
                 pass
             self.cap = None
+
+    def _update_capture_fps_estimate(self):
+        now = time.perf_counter()
+        if self._last_capture_frame_time is not None:
+            elapsed = now - self._last_capture_frame_time
+            if elapsed > 0:
+                instantaneous_fps = 1.0 / elapsed
+                if self._capture_fps_estimate is None:
+                    self._capture_fps_estimate = instantaneous_fps
+                else:
+                    self._capture_fps_estimate = (self._capture_fps_estimate * 0.9) + (instantaneous_fps * 0.1)
+        self._last_capture_frame_time = now
 
     # -----------------------
     # Recording worker (thread)
@@ -472,7 +490,9 @@ class CameraDevice:
             return False
         frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        frame_rate = max(1.0, float(self.cap.get(cv2.CAP_PROP_FPS) or REQUESTED_FPS))
+        reported_frame_rate = max(1.0, float(self.cap.get(cv2.CAP_PROP_FPS) or REQUESTED_FPS))
+        estimated_frame_rate = self._capture_fps_estimate if self._capture_fps_estimate and self._capture_fps_estimate > 0 else None
+        frame_rate = max(1.0, estimated_frame_rate or reported_frame_rate)
         frame_size = (frame_width, frame_height)
         self._clear_record_queue()
         self.save_requested = False
@@ -494,9 +514,11 @@ class CameraDevice:
             daemon=True,
         )
         self._rec_thread.start()
+        estimated_fps_display = f"{estimated_frame_rate:.2f}" if estimated_frame_rate else "n/a"
         print(
             f"{self.print_header} Recording worker session {self._active_record_session_id} armed "
-            f"(temp={self._recording_filename}, fps={frame_rate}, size={frame_size})"
+            f"(temp={self._recording_filename}, fps={frame_rate:.2f}, reported_fps={reported_frame_rate:.2f}, "
+            f"estimated_fps={estimated_fps_display}, size={frame_size})"
         )
         return True
 
@@ -682,6 +704,7 @@ class CameraDevice:
 
                     # Update stats & shared buffer
                     self.stats["captured"] += 1
+                    self._update_capture_fps_estimate()
                     async with self.frame_lock:
                         self.current_frame = frame.copy()
 
