@@ -15,6 +15,12 @@ from config import *
 from machine import JobData, convert_JobData_ULINT_to_int
 
 
+DEFAULT_TASK_TIMEOUT_MS = 3000
+STOP_RECORDING_TASK_TIMEOUT_MS = 10000
+STOP_AND_SAVE_TASK_TIMEOUT_MS = 60000
+TASK_WAIT_LOG_INTERVAL_MS = 5000
+
+
 class CameraService:
     def __init__(self, mqtt_host: str, mqtt_port: int, cameras: dict[int, CameraDevice]):
         """
@@ -60,6 +66,7 @@ class CameraService:
         self.task_start_time_ms = 0
         self.cam_id = 0
         self.part_location_id = 0
+        self._last_task_wait_log_ms = 0
 
         # Start Paho networking thread
         self.client.loop_start()
@@ -162,8 +169,17 @@ class CameraService:
                 print(f"[SERVICE] New task requested: {visTaskToString(ext_service_o.taskReqId)} for camera {cam_id}")
                 match ext_service_o.taskReqId:
                     case int(VisTasks.START_RECORDING):
+                        print(
+                            f"[SERVICE] Start Recording request details: cam={cam_id} "
+                            f"state={self.cameras[cam_id].state.recordingState}"
+                        )
                         self.cameras[cam_id].start_recording_command = True
                     case int(VisTasks.STOP_RECORDING):
+                        print(
+                            f"[SERVICE] Stop Recording request details: cam={cam_id} "
+                            f"state={self.cameras[cam_id].state.recordingState} "
+                            f"worker_active={self.cameras[cam_id].is_record_worker_active()}"
+                        )
                         self.cameras[cam_id].stop_recording_command = True
                     case int(VisTasks.STOP_AND_SAVE_RECORDING):
                         part_location_id = round(ext_service_o.taskParam1)
@@ -176,7 +192,7 @@ class CameraService:
                                 "saved",
                                 "TubeType_" + self.job.tubeTypeString,
                                 "Job_" + self.job.jobName,
-                                "Batch_" + str(self.job.activeBatchNumber).zfill(3),
+                                "Batch_" + self.job.batchId.zfill(3),
                             )
                             os.makedirs(fallback_subfolder, exist_ok=True)
                             fallback_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -186,6 +202,11 @@ class CameraService:
                             )
                             self.cameras[cam_id].save_filename = fallback_filename
                             print(f"[SERVICE] Save path permission denied ({e}). Falling back to {fallback_filename}")
+                        print(
+                            f"[SERVICE] Stop and Save request details: cam={cam_id} "
+                            f"state={self.cameras[cam_id].state.recordingState} "
+                            f"target={self.cameras[cam_id].save_filename}"
+                        )
                         self.cameras[cam_id].stop_and_save_recording_command = True
                     case int(VisTasks.CONNECT):
                         self.cameras[cam_id].connect_command = True
@@ -328,8 +349,12 @@ class CameraService:
         #start_time_str = job.setupStartTime
         #format like this: YYYY_MM_DD_HHMM where HH is military time
         job_start_str= "Job_" + job.jobName
+        raw_batch_id = job.batchId.strip()
+        batch_folder_id = raw_batch_id.zfill(3) if raw_batch_id.isdigit() else raw_batch_id
+        if not batch_folder_id:
+            batch_folder_id = str(job.activeBatchNumber).zfill(3)
         #job_name_str = "Job_" + job.jobName
-        subfolder = os.path.join(RECORDINGS_DIR, "TubeType_" + job.tubeTypeString, job_start_str, "Batch_" + str(job.activeBatchNumber).zfill(3))
+        subfolder = os.path.join(RECORDINGS_DIR, "TubeType_" + job.tubeTypeString, job_start_str, "Batch_" + batch_folder_id)
         os.makedirs(subfolder, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -338,6 +363,13 @@ class CameraService:
             f"Tube{part_location_id:02d}_{timestamp}.mp4",
         )
         return save_filename
+
+    def get_active_task_timeout_ms(self, task_id: int) -> int:
+        if task_id == int(VisTasks.STOP_RECORDING):
+            return STOP_RECORDING_TASK_TIMEOUT_MS
+        if task_id == int(VisTasks.STOP_AND_SAVE_RECORDING):
+            return STOP_AND_SAVE_TASK_TIMEOUT_MS
+        return DEFAULT_TASK_TIMEOUT_MS
 
 
     def monitorActiveTask(self):
@@ -351,9 +383,18 @@ class CameraService:
             case int(VisTasks.START_RECORDING):
                 task_was_successful = self.cameras[cam_id].state.recordingState == CameraRecordingStates.RECORDING
             case int(VisTasks.STOP_RECORDING):
-                task_was_successful = self.cameras[cam_id].state.recordingState == CameraRecordingStates.STOPPED
+                task_was_successful = (
+                    self.cameras[cam_id].state.recordingState == CameraRecordingStates.STOPPED
+                    and not self.cameras[cam_id].is_record_worker_active()
+                    and self.cameras[cam_id].is_record_worker_done()
+                )
             case int(VisTasks.STOP_AND_SAVE_RECORDING):
-                task_was_successful = self.cameras[cam_id].state.recordingState == CameraRecordingStates.SAVED
+                task_was_successful = (
+                    self.cameras[cam_id].state.recordingState == CameraRecordingStates.SAVED
+                    and not self.cameras[cam_id].is_record_worker_active()
+                    and self.cameras[cam_id].is_record_worker_done()
+                    and self.cameras[cam_id]._rec_worker_save_success is True
+                )
             case int(VisTasks.CONNECT):
                 task_was_successful = self.cameras[cam_id].state.isConnected
             case int(VisTasks.DISCONNECT):
@@ -361,18 +402,42 @@ class CameraService:
             case _:
                 print(f"[SERVICE] Unknown Active Task Id: {self.vis_sts.iExtService.i.activeTaskId}")
 
+        if self.vis_sts.iExtService.i.activeTaskId in (
+            int(VisTasks.STOP_RECORDING),
+            int(VisTasks.STOP_AND_SAVE_RECORDING),
+        ) and not task_was_successful:
+            now_ms = time.time() * 1000
+            if now_ms - self._last_task_wait_log_ms >= TASK_WAIT_LOG_INTERVAL_MS:
+                print(
+                    f"[SERVICE] Waiting for task {visTaskToString(self.vis_sts.iExtService.i.activeTaskId)}: "
+                    f"cam={cam_id} state={self.cameras[cam_id].state.recordingState} "
+                    f"worker_active={self.cameras[cam_id].is_record_worker_active()} "
+                    f"worker_done={self.cameras[cam_id].is_record_worker_done()} "
+                    f"save_success={self.cameras[cam_id]._rec_worker_save_success} "
+                    f"last_error={self.cameras[cam_id]._rec_worker_last_error}"
+                )
+                self._last_task_wait_log_ms = now_ms
+
         if task_was_successful:
             print(f"[SERVICE] Completed active task {visTaskToString(self.vis_sts.iExtService.i.activeTaskId)} with unique ID {self.vis_sts.iExtService.i.uniqueTaskActiveId}")
             self.prev_task_req_id = self.vis_sts.iExtService.i.activeTaskId
             self.vis_sts.iExtService.i.lastTaskId = self.vis_sts.iExtService.i.uniqueTaskActiveId
             self.vis_sts.iExtService.i.activeTaskId = 0
             self.vis_sts.iExtService.i.taskStepNum = 0
+            self._last_task_wait_log_ms = 0
             
 
-        elif time.time() * 1000 - self.task_start_time_ms > 3000 and self.vis_sts.iExtService.i.activeTaskId != 0:  # if task has been active for more than 10 seconds, reset it
-            print(f"[SERVICE] Resetting active task {visTaskToString(self.vis_sts.iExtService.i.activeTaskId)} due to timeout.")
+        elif (
+            self.vis_sts.iExtService.i.activeTaskId != 0
+            and time.time() * 1000 - self.task_start_time_ms > self.get_active_task_timeout_ms(self.vis_sts.iExtService.i.activeTaskId)
+        ):
+            print(
+                f"[SERVICE] Resetting active task {visTaskToString(self.vis_sts.iExtService.i.activeTaskId)} "
+                f"due to timeout after {self.get_active_task_timeout_ms(self.vis_sts.iExtService.i.activeTaskId)} ms."
+            )
             self.vis_sts.iExtService.i.activeTaskId = 0
             self.vis_sts.iExtService.i.taskStepNum = 0
+            self._last_task_wait_log_ms = 0
 
     async def run_state_machine(self):
         """Main service loop."""

@@ -54,6 +54,9 @@ STREAM_PORT = 8000
 
 # Diagnostic interval (s)
 DIAG_INTERVAL = 1.0
+RECORD_WORKER_WAIT_LOG_INTERVAL_MS = 5000
+FFMPEG_CONVERSION_TIMEOUT_SECONDS = 120
+FFMPEG_CONVERSION_PRESET = "ultrafast"
 
 
 
@@ -102,12 +105,24 @@ class CameraDevice:
         self.disconnect_command = False
 
         self.save_requested = False
+        self._record_session_id = 0
+        self._active_record_session_id = 0
 
         # Recording queue & worker
         self.rec_queue: "queue.Queue" = queue.Queue(maxsize=REC_QUEUE_MAXSIZE)
         self._rec_thread: Optional[threading.Thread] = None
         self._rec_running = threading.Event()
         self._recording_filename = None
+        self._rec_worker_done = threading.Event()
+        self._rec_worker_done.set()
+        self._rec_worker_last_error: Optional[str] = None
+        self._rec_worker_save_success: Optional[bool] = None
+        self._rec_worker_last_join_timed_out = False
+        self._rec_stop_requested = False
+        self._rec_stop_requested_at_ms = 0.0
+        self._last_rec_wait_log_ms = 0.0
+        self._active_ffmpeg_log_path: Optional[str] = None
+        self._last_ffmpeg_progress_line = ""
 
         # Stats
         self.stats = {
@@ -137,6 +152,66 @@ class CameraDevice:
         if self.state_callback:
             self.state_callback(self.id, self.state)
 
+    def _clear_record_queue(self):
+        while True:
+            try:
+                self.rec_queue.get_nowait()
+            except queue.Empty:
+                return
+
+    def _cleanup_finished_record_worker(self):
+        if self._rec_thread and not self._rec_thread.is_alive():
+            self._rec_thread = None
+
+    def is_record_worker_active(self) -> bool:
+        self._cleanup_finished_record_worker()
+        return self._rec_thread is not None
+
+    def is_record_worker_done(self) -> bool:
+        return self._rec_worker_done.is_set() and not self.is_record_worker_active()
+
+    def request_record_worker_stop(self):
+        if not self._rec_stop_requested:
+            self._rec_stop_requested = True
+            self._rec_stop_requested_at_ms = time.time() * 1000
+            self._last_rec_wait_log_ms = 0.0
+            print(
+                f"{self.print_header} Stop signal sent to record worker session {self._active_record_session_id} "
+                f"(save_requested={self.save_requested}, queue={self.rec_queue.qsize()})"
+            )
+        self._rec_running.clear()
+
+    def poll_record_worker_stop(self) -> bool:
+        self._cleanup_finished_record_worker()
+        if self._rec_thread is None:
+            if self._rec_stop_requested:
+                elapsed_ms = int((time.time() * 1000) - self._rec_stop_requested_at_ms)
+                print(
+                    f"{self.print_header} Record worker session {self._active_record_session_id} exited "
+                    f"after {elapsed_ms} ms"
+                )
+                self._rec_stop_requested = False
+                self._last_rec_wait_log_ms = 0.0
+            return self._rec_worker_done.is_set()
+
+        now_ms = time.time() * 1000
+        if now_ms - self._last_rec_wait_log_ms >= RECORD_WORKER_WAIT_LOG_INTERVAL_MS:
+            elapsed_ms = int(now_ms - self._rec_stop_requested_at_ms) if self._rec_stop_requested_at_ms else 0
+            print(
+                f"{self.print_header} Record worker session {self._active_record_session_id} still finalizing "
+                f"after {elapsed_ms} ms (save_requested={self.save_requested}, queue={self.rec_queue.qsize()})"
+            )
+            if self.save_requested:
+                progress_line = self._get_ffmpeg_progress_line()
+                if progress_line and progress_line != self._last_ffmpeg_progress_line:
+                    print(
+                        f"{self.print_header} FFmpeg progress for session {self._active_record_session_id}: "
+                        f"{progress_line}"
+                    )
+                    self._last_ffmpeg_progress_line = progress_line
+            self._last_rec_wait_log_ms = now_ms
+        return False
+
     def _resolve_unique_save_filename(self, filename: str) -> str:
         if not os.path.exists(filename):
             return filename
@@ -157,6 +232,27 @@ class CameraDevice:
                     f"{self.print_header} Save target exists, using refreshed timestamp: {candidate}",
                 )
                 return candidate
+
+    def _read_ffmpeg_log(self, log_path: str) -> str:
+        if not os.path.exists(log_path):
+            return ""
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+                return handle.read().replace("\r", "\n").strip()
+        except Exception as exc:
+            return f"failed to read ffmpeg log {log_path}: {exc}"
+
+    def _get_ffmpeg_progress_line(self) -> str:
+        if not self._active_ffmpeg_log_path:
+            return ""
+        ffmpeg_log = self._read_ffmpeg_log(self._active_ffmpeg_log_path)
+        if not ffmpeg_log or ffmpeg_log.startswith("failed to read ffmpeg log"):
+            return ffmpeg_log
+        for line in reversed(ffmpeg_log.splitlines()):
+            stripped = line.strip()
+            if stripped.startswith("frame="):
+                return stripped
+        return ""
 
     # -----------------------
     # Capture & device control
@@ -219,16 +315,21 @@ class CameraDevice:
     # -----------------------
     # Recording worker (thread)
     # -----------------------
-    def _rec_worker(self, filename, fourcc, fps, frame_size):
+    def _rec_worker(self, session_id, filename, fourcc, fps, frame_size):
         """Background thread: consume frames from rec_queue and write via VideoWriter."""
-        
+
         try:
-            self.save_requested = False
+            self._rec_worker_last_error = None
+            self._rec_worker_save_success = None
             writer = cv2.VideoWriter(filename, fourcc, fps, frame_size)
             if not writer.isOpened():
-                print(f"{self.print_header} Record worker: VideoWriter failed to open {filename}")
+                self._rec_worker_last_error = f"VideoWriter failed to open {filename}"
+                print(f"{self.print_header} Record worker session {session_id}: {self._rec_worker_last_error}")
                 return
-            print(f"{self.print_header} Record worker started (writing to {filename})")
+            print(
+                f"{self.print_header} Record worker session {session_id} started "
+                f"(writing to {filename}, queue={self.rec_queue.qsize()})"
+            )
             while self._rec_running.is_set() or not self.rec_queue.empty():
                 try:
                     frame = self.rec_queue.get(timeout=0.1)
@@ -239,52 +340,131 @@ class CameraDevice:
                     self.stats["record_written"] += 1
                 except Exception as e:
                     print(f"{self.print_header} Error writing frame in record worker: {e}")
-            print(f"{self.print_header} Record worker is stopping")
+            print(
+                f"{self.print_header} Record worker session {session_id} is stopping "
+                f"(save_requested={self.save_requested}, queue={self.rec_queue.qsize()}, "
+                f"frames_written={self.stats['record_written']})"
+            )
             writer.release()
             if self.save_requested:
                 converted = self._resolve_unique_save_filename(self.save_filename)
+                source_exists = os.path.exists(filename)
+                source_size = os.path.getsize(filename) if source_exists else 0
+                print(
+                    f"{self.print_header} Converting to browser-friendly codec and saving as: {converted} "
+                    f"(source={filename}, exists={source_exists}, size={source_size} bytes, "
+                    f"preset={FFMPEG_CONVERSION_PRESET}, timeout={FFMPEG_CONVERSION_TIMEOUT_SECONDS}s)"
+                )
 
-            print(f"{self.print_header} Converting to browser-friendly codec and saved as: {converted}")
+                ffmpeg_command = [
+                    'ffmpeg', '-nostdin', '-y', '-i', filename,
+                    '-c:v', 'libx264', '-preset', FFMPEG_CONVERSION_PRESET, '-crf', '23',
+                    '-movflags', '+faststart',
+                    converted
+                ]
+                ffmpeg_started_at = time.time()
+                ffmpeg_log_path = os.path.join(
+                    TEMP_RECORDING_DIR,
+                    f"ffmpeg_cam{self.id}_session{session_id}.log",
+                )
+                self._active_ffmpeg_log_path = ffmpeg_log_path
+                try:
+                    with open(ffmpeg_log_path, "w", encoding="utf-8") as ffmpeg_log_file:
+                        process = subprocess.Popen(
+                            ffmpeg_command,
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=ffmpeg_log_file,
+                            text=True,
+                        )
+                        try:
+                            return_code = process.wait(timeout=FFMPEG_CONVERSION_TIMEOUT_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                            elapsed_seconds = time.time() - ffmpeg_started_at
+                            stderr_output = self._read_ffmpeg_log(ffmpeg_log_path)
+                            self._rec_worker_save_success = False
+                            self._rec_worker_last_error = (
+                                f"FFmpeg conversion timed out after {elapsed_seconds:.1f}s for file {converted}: "
+                                f"{stderr_output or 'no ffmpeg log output'}"
+                            )
+                            print(f"{self.print_header} {self._rec_worker_last_error}")
+                            if os.path.exists(filename):
+                                print(
+                                    f"{self.print_header} Preserving temp recording after timed out conversion: "
+                                    f"{filename} ({os.path.getsize(filename)} bytes)"
+                                )
+                            return
+                except Exception as exc:
+                    elapsed_seconds = time.time() - ffmpeg_started_at
+                    self._rec_worker_save_success = False
+                    self._rec_worker_last_error = (
+                        f"FFmpeg conversion process failed after {elapsed_seconds:.1f}s for file {converted}: "
+                        f"{exc}"
+                    )
+                    print(f"{self.print_header} {self._rec_worker_last_error}")
+                    if os.path.exists(filename):
+                        print(
+                            f"{self.print_header} Preserving temp recording after failed conversion launch: "
+                            f"{filename} ({os.path.getsize(filename)} bytes)"
+                        )
+                    return
 
-            if os.path.exists(converted):
-                # append file name with letter instead of overwriting
-                print(f"{self.print_header} Overwriting existing file: {converted}")
+                stderr_output = self._read_ffmpeg_log(ffmpeg_log_path)
 
-            # Set this to True to see the ffmpeg output, False to hide it
-            print_subprocess_info = False
-
-            # If False, redirect output to DEVNULL so it doesn't clutter your terminal
-            output_dest = None if print_subprocess_info else subprocess.DEVNULL
-
-            process_info = subprocess.run([
-                'ffmpeg', '-y', '-i', filename,
-                '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
-                '-movflags', '+faststart',
-                converted
-            ], stdout=output_dest, stderr=output_dest, text=True)
-
-            # Check if ffmpeg process was successful
-            if process_info.returncode != 0:
-                print(f"{self.print_header} FFmpeg conversion failed for file: {converted}: {process_info.stderr}")
+                if return_code != 0:
+                    self._rec_worker_save_success = False
+                    self._rec_worker_last_error = (
+                        f"FFmpeg conversion failed for file {converted}: "
+                        f"{stderr_output or 'no ffmpeg log output'}"
+                    )
+                    print(f"{self.print_header} {self._rec_worker_last_error}")
+                    if os.path.exists(filename):
+                        print(
+                            f"{self.print_header} Preserving temp recording after failed conversion: "
+                            f"{filename} ({os.path.getsize(filename)} bytes)"
+                        )
+                else:
+                    elapsed_seconds = time.time() - ffmpeg_started_at
+                    self._rec_worker_save_success = True
+                    print(f"{self.print_header} FFmpeg conversion succeeded in {elapsed_seconds:.1f}s")
+                    print(f"{self.print_header} File saved at: {converted}")
+                    if os.path.exists(filename):
+                        print(
+                            f"{self.print_header} Removing temp recording after successful conversion: "
+                            f"{filename} ({os.path.getsize(filename)} bytes)"
+                        )
+                        os.remove(filename)
             else:
-                print(f"{self.print_header} FFmpeg conversion succeeded")
-                print(f"{self.print_header} File saved at: {converted}")
+                self._rec_worker_save_success = False
+                if os.path.exists(filename):
+                    print(
+                        f"{self.print_header} Recording stopped without save; temp file remains at "
+                        f"{filename} ({os.path.getsize(filename)} bytes)"
+                    )
 
-            os.remove(filename)
             self.save_filename = "unspecified_filename.mp4"
-            print(f"{self.print_header} Record worker stopped")
+            self._active_ffmpeg_log_path = None
+            print(f"{self.print_header} Record worker session {session_id} stopped")
 
         except Exception as e:
-            print(f"{self.print_header} Record worker crashed: {e}")
+            self._rec_worker_last_error = str(e)
+            print(f"{self.print_header} Record worker session {session_id} crashed: {e}")
+        finally:
+            self._active_ffmpeg_log_path = None
+            self._rec_running.clear()
+            self._rec_worker_done.set()
 
 
     def start_record_worker(self, filename=None):
         # Ensure temp recording directory exists before opening VideoWriter.
         os.makedirs(TEMP_RECORDING_DIR, exist_ok=True)
-        
-      
+
+        self._cleanup_finished_record_worker()
         self._recording_filename = self.temp_filename
         if self._rec_thread and self._rec_thread.is_alive():
+            print(f"{self.print_header} Cannot start recording; previous worker is still active")
             return
         # Determine frame size and fps from current capture if possible
         if not self.cap:
@@ -294,23 +474,52 @@ class CameraDevice:
         frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         frame_rate = max(1.0, float(self.cap.get(cv2.CAP_PROP_FPS) or REQUESTED_FPS))
         frame_size = (frame_width, frame_height)
+        self._clear_record_queue()
+        self.save_requested = False
+        self._record_session_id += 1
+        self._active_record_session_id = self._record_session_id
+        self._rec_worker_done.clear()
+        self._rec_worker_last_error = None
+        self._rec_worker_save_success = None
+        self._rec_worker_last_join_timed_out = False
+        self._rec_stop_requested = False
+        self._rec_stop_requested_at_ms = 0.0
+        self._last_rec_wait_log_ms = 0.0
+        self._active_ffmpeg_log_path = None
+        self._last_ffmpeg_progress_line = ""
         self._rec_running.set()
         self._rec_thread = threading.Thread(
             target=self._rec_worker,
-            args=(self._recording_filename, RECORD_FOURCC, frame_rate, frame_size),
+            args=(self._active_record_session_id, self._recording_filename, RECORD_FOURCC, frame_rate, frame_size),
             daemon=True,
         )
         self._rec_thread.start()
+        print(
+            f"{self.print_header} Recording worker session {self._active_record_session_id} armed "
+            f"(temp={self._recording_filename}, fps={frame_rate}, size={frame_size})"
+        )
         return True
 
     def stop_record_worker(self, join_timeout=3.0):
         # Signal worker to finish and join
-        self._rec_running.clear()
+        self.request_record_worker_stop()
         if self._rec_thread:
+            print(
+                f"{self.print_header} Waiting for record worker session {self._active_record_session_id} "
+                f"to exit (save_requested={self.save_requested}, queue={self.rec_queue.qsize()}, "
+                f"timeout={join_timeout}s)"
+            )
             self._rec_thread.join(timeout=join_timeout)
             if self._rec_thread.is_alive():
+                self._rec_worker_last_join_timed_out = True
                 print(f"{self.print_header} Warning: record worker did not exit within timeout")
+                return False
+            self._rec_worker_last_join_timed_out = False
+            print(f"{self.print_header} Record worker session {self._active_record_session_id} exited")
             self._rec_thread = None
+            self._rec_stop_requested = False
+            self._last_rec_wait_log_ms = 0.0
+        return self.is_record_worker_done()
 
     # -----------------------
     # aiohttp streaming
@@ -504,19 +713,27 @@ class CameraDevice:
                             else:
                                 print(f"{self.print_header} Failed to start recording worker")
 
-                    if self.stop_recording_command or self.stop_and_save_recording_command:
-                        if self.stop_recording_command and self.state.recordingState == CameraRecordingStates.RECORDING or self.state.recordingState == CameraRecordingStates.SAVED:
-                            # Stop recording without saving: discard worker immediately
-                            self.save_requested = False
-                            self.stop_record_worker()
-                            self.state.recordingState = CameraRecordingStates.STOPPED
-                            print(f"{self.print_header} Recording stopped without saving.")
-                        elif self.stop_and_save_recording_command and self.state.recordingState == CameraRecordingStates.RECORDING:
-                            self.state.recordingState = CameraRecordingStates.SAVING
-                            print(f"{self.print_header} Stopping recording, finalizing file...")
-
+                    if self.stop_recording_command:
                         self.stop_recording_command = False
+                        if self.state.recordingState == CameraRecordingStates.RECORDING:
+                            self.save_requested = False
+                            self.state.recordingState = CameraRecordingStates.STOPPING
+                            self.request_record_worker_stop()
+                            print(f"{self.print_header} Stop requested; waiting for record worker to exit without saving")
+                        elif self.state.recordingState == CameraRecordingStates.SAVED:
+                            self.state.recordingState = CameraRecordingStates.STOPPED
+                            print(f"{self.print_header} Recording already finalized; marking state as stopped")
+
+                    if self.stop_and_save_recording_command:
                         self.stop_and_save_recording_command = False
+                        if self.state.recordingState == CameraRecordingStates.RECORDING:
+                            self.save_requested = True
+                            self.state.recordingState = CameraRecordingStates.SAVING
+                            self.request_record_worker_stop()
+                            print(
+                                f"{self.print_header} Stopping recording, finalizing file "
+                                f"to {self.save_filename}"
+                            )
 
                     if self.state.recordingState == CameraRecordingStates.RECORDING:
                         # enqueue frame non-blocking; drop if full
@@ -525,12 +742,25 @@ class CameraDevice:
                         except queue.Full:
                             self.stats["dropped_for_rec"] += 1
 
+                    elif self.state.recordingState == CameraRecordingStates.STOPPING:
+                        worker_stopped = self.poll_record_worker_stop()
+                        if worker_stopped:
+                            self.state.recordingState = CameraRecordingStates.STOPPED
+                            print(f"{self.print_header} Recording stopped without saving; worker fully stopped.")
+
                     elif self.state.recordingState == CameraRecordingStates.SAVING:
                         # finalize recording: stop worker and transition to stopped
-                        self.save_requested = True
-                        self.stop_record_worker()
-                        self.state.recordingState = CameraRecordingStates.SAVED
-                        print(f"{self.print_header} Recording saved and worker stopped.")
+                        worker_stopped = self.poll_record_worker_stop()
+                        if worker_stopped:
+                            if self._rec_worker_save_success:
+                                self.state.recordingState = CameraRecordingStates.SAVED
+                                print(f"{self.print_header} Recording saved and worker stopped.")
+                            else:
+                                self.state.recordingState = CameraRecordingStates.STOPPED
+                                print(
+                                    f"{self.print_header} Recording worker stopped but save did not complete: "
+                                    f"{self._rec_worker_last_error or 'unknown error'}"
+                                )
                        
                 else:
                     # Not connected: ensure streaming and recording are stopped
@@ -546,7 +776,11 @@ class CameraDevice:
                         self.state.isStreaming = False
                         print(f"{self.print_header} Streaming disabled")
 
-                    if self.state.recordingState == CameraRecordingStates.RECORDING or self.state.recordingState == CameraRecordingStates.SAVING:
+                    if self.state.recordingState in (
+                        CameraRecordingStates.RECORDING,
+                        CameraRecordingStates.SAVING,
+                        CameraRecordingStates.STOPPING,
+                    ):
                         self.stop_record_worker()
                         self.state.recordingState = CameraRecordingStates.STOPPED
                         print(f"{self.print_header} Lost connection: stopping")
@@ -558,7 +792,11 @@ class CameraDevice:
             pass
         finally:
             # Cleanup
-            if self.state.recordingState == CameraRecordingStates.RECORDING:
+            if self.state.recordingState in (
+                CameraRecordingStates.RECORDING,
+                CameraRecordingStates.SAVING,
+                CameraRecordingStates.STOPPING,
+            ):
                 self.stop_record_worker()
             if self._logging_task:
                 self._logging_task.cancel()

@@ -38,6 +38,7 @@ class JobData:
     workInstruction: str = ""
     operationNumber: str = ""
     operatorId: str = ""
+    batchSts: int = 0
 
 
     #HELPER METHER to convert ULINT to int
