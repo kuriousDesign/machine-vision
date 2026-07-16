@@ -1,7 +1,10 @@
 from enum import Enum
 import os
+from pickle import STRING
 import sys
 from pathlib import Path
+
+from click import STRING
 from dataclasses import dataclass, field
 from device import *
 from cameras.types import *
@@ -43,7 +46,8 @@ def cameraIdToString(camera_id):
 
 class SubscriptionTopics(str, Enum):
     API_PLC_ACTION_REQ = DEVICE_TOPIC + '/api/action_req',
-    MACHINE_VIS_STATUS = MACHINE_CFG.visionStsTopic
+    MACHINE_VIS_STATUS = MACHINE_CFG.visionDeviceTopicPath + '/sts',
+    MACHINE_VIS_META = MACHINE_CFG.visionDeviceTopicPath + '/meta',
     MACHINE_JOBDATA = "machine/job"
 
 class PublishTopics(str, Enum):
@@ -98,6 +102,12 @@ class VisSts(ExtServiceSts):
     isRecording: bool = False
     allDisconnected: bool = False
     pluggedInSerialNumbers:list[str] = field(default_factory=lambda: ["" for _ in range(MAX_NUM_PLUGGED_IN_CAMERAS)])
+
+@dataclass
+class VisMeta:
+    recordingFolderPath: str = ""
+    recordingFilenameMetaData: str = ""
+    flipBit: bool = False
 
 @dataclass
 class DeviceCfg:

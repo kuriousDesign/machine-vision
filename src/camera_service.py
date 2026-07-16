@@ -33,6 +33,7 @@ class CameraService:
         self.device_cfg = DeviceCfg()
         self.job = JobData()
         self.vis_sts = VisSts()
+        self.vis_meta = VisMeta()
         self.vis_cfg = VisCfg()
         self.vis_sts.cfg = self.vis_cfg
         #self.vis_sts.cameraStates.append(CameraStatus()) # dummy for index 0
@@ -65,7 +66,7 @@ class CameraService:
         self.prev_task_req_id = 0
         self.task_start_time_ms = 0
         self.cam_id = 0
-        self.part_location_id = 0
+        self.video_index_id = 0
         self._last_task_wait_log_ms = 0
 
         # Start Paho networking thread
@@ -164,8 +165,8 @@ class CameraService:
                 self.vis_sts.iExtService.i.taskStepNum = 0
                 cam_id = round(ext_service_o.taskParam0)
                 self.cam_id = cam_id
-                part_location_id = round(ext_service_o.taskParam1)
-                self.part_location_id = part_location_id
+                index_id = round(ext_service_o.taskParam1)
+                self.video_index_id = index_id
                 print(f"[SERVICE] New task requested: {visTaskToString(ext_service_o.taskReqId)} for camera {cam_id}")
                 match ext_service_o.taskReqId:
                     case int(VisTasks.START_RECORDING):
@@ -182,26 +183,24 @@ class CameraService:
                         )
                         self.cameras[cam_id].stop_recording_command = True
                     case int(VisTasks.STOP_AND_SAVE_RECORDING):
-                        part_location_id = round(ext_service_o.taskParam1)
-                        self.part_location_id = part_location_id
+                        index_id = round(ext_service_o.taskParam1)
+                        self.video_index_id = index_id
                         try:
-                            self.cameras[cam_id].save_filename = self.build_save_filename(self.job, part_location_id)
+                            self.cameras[cam_id].save_filename = self.build_save_filename(self.vis_meta, index_id)
                         except PermissionError as e:
                             fallback_subfolder = os.path.join(
                                 TEMP_RECORDING_DIR,
                                 "saved",
-                                "TubeType_" + self.job.tubeTypeString,
-                                "Job_" + self.job.jobName,
-                                "Batch_" + self.job.batchId.zfill(3),
                             )
                             os.makedirs(fallback_subfolder, exist_ok=True)
                             fallback_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                             fallback_filename = os.path.join(
                                 fallback_subfolder,
-                                f"Tube{part_location_id:02d}_{fallback_timestamp}.mp4",
+                                f"Tube{index_id:02d}_{fallback_timestamp}.mp4",
                             )
                             self.cameras[cam_id].save_filename = fallback_filename
                             print(f"[SERVICE] Save path permission denied ({e}). Falling back to {fallback_filename}")
+                        
                         print(
                             f"[SERVICE] Stop and Save request details: cam={cam_id} "
                             f"state={self.cameras[cam_id].state.recordingState} "
@@ -259,6 +258,16 @@ class CameraService:
                     self.handleTaskRequest(self.vis_sts.iExtService.o)
 
                     #print(f"[MQTT] Updated MACHINE_VIS_STATUS: heartbeatVal={self.vis_sts.iExtService.o.heartbeatVal}")
+                    return
+
+                case SubscriptionTopics.MACHINE_VIS_META.value:
+                # convert data to VisMeta data class
+                    if data is None:
+                        print(f"[MQTT] Empty MACHINE_VIS_META payload")
+                        return
+                    vis_meta_from_plc: VisMeta = from_dict(data_class=VisMeta, data=data)
+                    self.vis_meta = vis_meta_from_plc
+                    #print(f"[MQTT] Updated MACHINE_VIS_META: recordingFolderPath={self.vis_meta.recordingFolderPath}, recordingFilenameMetaData={self.vis_meta.recordingFilenameMetaData}")
                     return
             
                 case SubscriptionTopics.MACHINE_JOBDATA.value:
@@ -340,8 +349,27 @@ class CameraService:
 
         self.vis_sts.allDisconnected = all_disconnected
 
+    def build_save_filename(self, meta: VisMeta, index: int):
+        """Builds the save filename based on the meta data."""
+        if not meta.recordingFolderPath:
+            raise ValueError("Recording folder path is empty in VisMeta.")
+        if not meta.recordingFilenameMetaData:
+            raise ValueError("Recording filename metadata is empty in VisMeta.")
+        #target=/opt/recordings/TubeType_/Lot_/WO_/Heat_0/Video00_2026-07-15_19-59-45_TubeType_/Lot_/WO_/Heat_0.mp4
+        subfolder = os.path.join(RECORDINGS_DIR, meta.recordingFolderPath)
+        #print(f"[SERVICE] Creating subfolder for recordings: {subfolder}")
+        os.makedirs(subfolder, exist_ok=True)
 
-    def build_save_filename(self, job: JobData, part_location_id: int):
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        save_filename = os.path.join(
+            subfolder,
+            f"Tube{index:02d}_{timestamp}_{meta.recordingFilenameMetaData}.mp4",
+        )
+        #print(f"[SERVICE] Save filename built: {save_filename}")
+        return save_filename
+
+
+    def build_save_filename_deprecated(self, job: JobData, part_location_id: int):
         """Builds the save filename based on the job data."""
 
         # saved videos or stored in RECORDINGS_DIR in subfolders based on job.TubeTypeString, job SetupTime, job ActiveBatchNumber and part_location_id
@@ -375,7 +403,7 @@ class CameraService:
     def monitorActiveTask(self):
         """Monitors the active task and updates the state accordingly."""
         cam_id = self.cam_id
-        part_location_id = self.part_location_id
+        part_location_id = self.video_index_id
         task_was_successful = False
         match self.vis_sts.iExtService.i.activeTaskId:
             case int(VisTasks.NONE):
