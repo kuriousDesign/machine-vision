@@ -35,10 +35,40 @@ HEARTBEAT_TIMEOUT_MS = 3000  # 3 seconds
 
 # GET MACHINE CONFIG FROM ENV
 MACHINE_ID = os.getenv("MACHINE_ID", "UNKNOWN_MACHINE")
+
+def normalize_machine_topic_id(machine_id: str) -> str:
+    trimmed_machine_id = machine_id.strip()
+    if not trimmed_machine_id:
+        raise ValueError("MACHINE_ID is required to build MQTT topic namespaces")
+
+    trailing_digits = ""
+    for character in reversed(trimmed_machine_id):
+        if character.isdigit():
+            trailing_digits = character + trailing_digits
+            continue
+        break
+
+    if trailing_digits:
+        return trailing_digits
+
+    sanitized_machine_id = "".join(
+        character if character.isalnum() or character in {"_", "-"} else "_"
+        for character in trimmed_machine_id
+    ).strip("_")
+
+    if not sanitized_machine_id:
+        raise ValueError(f"Unable to normalize MACHINE_ID for MQTT topics: {machine_id}")
+
+    return sanitized_machine_id
+
+
+MACHINE_TOPIC_ROOT = f"machine_{normalize_machine_topic_id(MACHINE_ID)}"
+BRIDGE_TOPIC_ROOT = f"bridge_{normalize_machine_topic_id(MACHINE_ID)}"
 MACHINE_CFG = getMachineCfg(MachineIds(MACHINE_ID))
 NUM_CAMERAS = MACHINE_CFG.numCameras
 DEVICE_ID = MACHINE_CFG.deviceId
 DEVICE_TOPIC = "ext_service/" + str(DEVICE_ID)
+VISION_DEVICE_TOPIC_PATH = MACHINE_CFG.visionDeviceTopicPath.replace("machine/", f"{MACHINE_TOPIC_ROOT}/", 1)
 
 
 def cameraIdToString(camera_id):
@@ -46,13 +76,13 @@ def cameraIdToString(camera_id):
 
 class SubscriptionTopics(str, Enum):
     API_PLC_ACTION_REQ = DEVICE_TOPIC + '/api/action_req',
-    MACHINE_VIS_STATUS = MACHINE_CFG.visionDeviceTopicPath + '/sts',
-    MACHINE_VIS_META = MACHINE_CFG.visionDeviceTopicPath + '/meta',
-    MACHINE_JOBDATA = "machine/job"
+    MACHINE_VIS_STATUS = VISION_DEVICE_TOPIC_PATH + '/sts',
+    MACHINE_VIS_META = VISION_DEVICE_TOPIC_PATH + '/meta',
+    MACHINE_JOBDATA = f"{MACHINE_TOPIC_ROOT}/job"
 
 class PublishTopics(str, Enum):
-    UPDATE_DEVICE_DATA = "bridge/api/update_device" + '/' + str(DEVICE_ID)
-    UPDATE_DEVICE_INTERFACE = "bridge/api/update_interface" + '/' + str(DEVICE_ID)
+    UPDATE_DEVICE_DATA = BRIDGE_TOPIC_ROOT + "/api/update_device" + '/' + str(DEVICE_ID)
+    UPDATE_DEVICE_INTERFACE = BRIDGE_TOPIC_ROOT + "/api/update_interface" + '/' + str(DEVICE_ID)
 
 class VisTasks(IntEnum):
     NONE = 0  # do not remove or change this
