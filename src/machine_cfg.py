@@ -27,7 +27,7 @@ def getMachineCfg(machine_id: MachineIds) -> MachineCfg:
         case MachineIds.TUBELINER_00251:
             return MachineCfg(
                 machineName=MachineIds.TUBELINER_00251.value,
-                deviceId=13,
+                deviceId=5,
                 visionDeviceTopicPath= "machine/1/4/7/5",
                 numCameras=2,
                 cameraCfgs=[
@@ -51,7 +51,7 @@ def getMachineCfg(machine_id: MachineIds) -> MachineCfg:
                 machineName=MachineIds.SAW_00225.value,
                 deviceId=13,
                 #visionStsTopic= "machine/1/4/10/13/sts",
-                visionDeviceTopicPath= "machine/1/5",
+                visionDeviceTopicPath= "machine/1/13",
                 numCameras=1,
                 cameraCfgs=[
                     MachineCameraCfg(serialNumber="88817FAF", name="Benchtop", id=0)
@@ -60,7 +60,7 @@ def getMachineCfg(machine_id: MachineIds) -> MachineCfg:
         case MachineIds.TLX_00254:
             return MachineCfg(
                 machineName=MachineIds.TLX_00254.value,
-                deviceId=13,
+                deviceId=5,
                 visionDeviceTopicPath= "machine/1/5",
                 numCameras=2,
                 cameraCfgs=[
