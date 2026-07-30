@@ -13,17 +13,12 @@ services:
     
     volumes:
       - ./src:/app/src
-      - /opt/recordings:/opt/recordings
+      - ${RECORDINGS_DIR:-/recordings_drive}:${RECORDINGS_DIR:-/recordings_drive}
       - /run/udev:/run/udev:ro  # <--- CRITICAL: Provides the udev database
       - /dev:/dev               # <--- CRITICAL: Provides the device nodes
     group_add:
       - video
       - plugdev
-    # environment:
-    #   - MQTT_BROKER=mosquitto
-    #   - MQTT_PORT=1883
-    #   - MONGO_URI=mongodb://mongo:27017
-
 
     logging:
       driver: "json-file"

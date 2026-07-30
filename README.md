@@ -17,3 +17,11 @@ pip install setuptools
 ## Install your requirements
 pip install -r requirements.txt
 
+## Recordings path in Docker
+Use `RECORDINGS_DIR` in `.env` to set the recordings path. `machine-vision`
+uses the same path on the host and inside the container.
+
+Examples:
+- typical setup: `RECORDINGS_DIR=/opt/recordings`
+- this IPC: `RECORDINGS_DIR=/recordings_drive`
+

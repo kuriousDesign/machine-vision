@@ -28,6 +28,9 @@ from dataclasses import dataclass
 from cameras.camera_names import get_camera_index_by_serial
 from cameras.types import *
 import subprocess
+from dotenv import load_dotenv
+
+load_dotenv()
 # -----------------------
 # Configuration
 # -----------------------
@@ -42,7 +45,7 @@ RECORD_FOURCC = cv2.VideoWriter_fourcc(*"mp4v")
 #RECORD_FOURCC = cv2.VideoWriter_fourcc(*'x264')   # If libx264 is built into OpenCV
 #RECORD_FOURCC = cv2.VideoWriter_fourcc(*'avc1') 
 REC_QUEUE_MAXSIZE = 12              # bounded queue for frames to record (drop when full)
-RECORDINGS_DIR = "/opt/recordings"
+RECORDINGS_DIR = os.environ.get("RECORDINGS_DIR", "/recordings_drive")
 TEMP_RECORDING_DIR = os.path.join(RECORDINGS_DIR, "temp")
 # Streaming settings (lighter than recording)
 STREAM_TARGET_WIDTH = 1280

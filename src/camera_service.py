@@ -355,7 +355,6 @@ class CameraService:
             raise ValueError("Recording folder path is empty in VisMeta.")
         if not meta.recordingFilenameMetaData:
             print("Recording filename metadata is empty in VisMeta.")
-        #target=/opt/recordings/TubeType_/Lot_/WO_/Heat_0/Video00_2026-07-15_19-59-45_TubeType_/Lot_/WO_/Heat_0.mp4
         subfolder = os.path.join(RECORDINGS_DIR, meta.recordingFolderPath)
         #print(f"[SERVICE] Creating subfolder for recordings: {subfolder}")
         os.makedirs(subfolder, exist_ok=True)

@@ -27,7 +27,7 @@ print(f"MQTT_BROKER_IP: {MQTT_BROKER_IP}")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
-RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/opt/recordings")
+RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/recordings_drive")
 MAX_NUM_CAMERAS = 2
 MAX_NUM_PLUGGED_IN_CAMERAS = 5
 
