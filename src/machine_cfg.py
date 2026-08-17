@@ -61,7 +61,7 @@ def getMachineCfg(machine_id: MachineIds) -> MachineCfg:
             return MachineCfg(
                 machineName=MachineIds.TLX_00254.value,
                 deviceId=5,
-                visionDeviceTopicPath= "machine/1/5",
+                visionDeviceTopicPath= "machine/1/4/5",
                 numCameras=2,
                 cameraCfgs=[
                     MachineCameraCfg(serialNumber="C9A45D6F", name="Screener", id=0),
