@@ -1,23 +1,22 @@
 import asyncio
 from datetime import datetime
-from enum import Enum
 import json
-from re import match
 import threading
 import time
-from unittest import case
 from dacite import from_dict
 import paho.mqtt.client as mqtt
 from dataclasses import asdict
 from cameras.camera_device import RECORDINGS_DIR, TEMP_RECORDING_DIR, CameraDevice, CameraRecordingStates
 from cameras.camera_names import *
 from config import *
+from machine_cfg import ConnectionSearchType
 from machine import JobData, convert_JobData_ULINT_to_int
 
 
 DEFAULT_TASK_TIMEOUT_MS = 3000
 STOP_RECORDING_TASK_TIMEOUT_MS = 10000
 STOP_AND_SAVE_TASK_TIMEOUT_MS = 60000
+CONNECT_AFTER_DISCONNECT_TASK_TIMEOUT_MS = 10000
 TASK_WAIT_LOG_INTERVAL_MS = 5000
 
 
@@ -34,9 +33,8 @@ class CameraService:
         self.job = JobData()
         self.vis_sts = VisSts()
         self.vis_meta = VisMeta()
-        self.vis_cfg = VisCfg()
+        self.vis_cfg = build_vis_cfg()
         self.vis_sts.cfg = self.vis_cfg
-        #self.vis_sts.cameraStates.append(CameraStatus()) # dummy for index 0
         self.device_data = Device()
         self.device_data.cfg = self.device_cfg
         self.device_data.sts = self.vis_sts
@@ -63,20 +61,45 @@ class CameraService:
         self.device_topic = DEVICE_TOPIC
         self._mqtt_connect_event = threading.Event()
 
-        self.prev_task_req_id = 0
+        self.prev_unique_task_req_id = 0
         self.task_start_time_ms = 0
         self.cam_id = 0
         self.video_index_id = 0
         self._last_task_wait_log_ms = 0
+        self._pending_connect_cam_id = None
 
         # Start Paho networking thread
         self.client.loop_start()
 
-            # Start the hardware monitor in its own thread
+        # Start the hardware monitor in its own thread
         self.hw_thread = threading.Thread(target=self._hardware_monitor_worker, daemon=True)
         self.hw_thread.start()
 
         self.connect_mqtt()
+
+    def _request_disconnect_for_other_cameras(self, target_cam_id: int) -> list[int]:
+        disconnected_camera_ids = []
+        for other_cam_id, camera in self.cameras.items():
+            if other_cam_id == target_cam_id:
+                continue
+            if camera.state.isConnected:
+                camera.disconnect_command = True
+                disconnected_camera_ids.append(other_cam_id)
+        return disconnected_camera_ids
+
+    def _request_disconnect_for_all_connected_cameras(self) -> list[int]:
+        disconnected_camera_ids = []
+        for cam_id, camera in self.cameras.items():
+            if camera.state.isConnected:
+                camera.disconnect_command = True
+                disconnected_camera_ids.append(cam_id)
+        return disconnected_camera_ids
+
+    def _all_other_cameras_disconnected(self, target_cam_id: int) -> bool:
+        return all(
+            other_cam_id == target_cam_id or not camera.state.isConnected
+            for other_cam_id, camera in self.cameras.items()
+        )
 
     # ----------------------------------------------------------------------
     # MQTT CONNECT/DISCONNECT
@@ -142,12 +165,18 @@ class CameraService:
         
 
         for cam in self.cameras.values():
-            is_plugged_in = any(camera['serial'] == cam.camera_serial for camera in plugged_cameras_list)
+            search_type_value = getattr(cam.connection_search_type, "value", cam.connection_search_type)
+            if search_type_value == "USB_PORT":
+                is_plugged_in = any(camera['usb_port'] == cam.hw_port for camera in plugged_cameras_list)
+                camera_identifier = cam.hw_port
+            else:
+                is_plugged_in = any(camera['serial'] == cam.camera_serial for camera in plugged_cameras_list)
+                camera_identifier = cam.camera_serial
           
             if is_plugged_in != self.vis_sts.cameraStates[cam.id].isPluggedIn:
                 
                 status = "plugged in" if is_plugged_in else "unplugged"
-                print(f"[SERVICE] Camera {cam.camera_name} ({cam.camera_serial}) {status}.")
+                print(f"[SERVICE] Camera {cam.camera_name} ({search_type_value}={camera_identifier}) {status}.")
                 
                 # Logic: If unplugged, force a disconnect command to the device
                 if not is_plugged_in:
@@ -157,8 +186,10 @@ class CameraService:
 
     def handleTaskRequest(self, ext_service_o: IExtServiceOutputs):
         """Checks if PLC has requested a task change via the stepNum."""
-        if ext_service_o.taskReqId != 0 and self.prev_task_req_id != ext_service_o.taskReqId:
+        accepted_task_request = False
+        if ext_service_o.taskReqId != 0 and self.prev_unique_task_req_id != ext_service_o.uniqueTaskReqId:
             if self.vis_sts.iExtService.i.activeTaskId == 0:
+                accepted_task_request = True
                 self.task_start_time_ms = int(time.time() * 1000)
                 self.vis_sts.iExtService.i.activeTaskId = ext_service_o.taskReqId
                 self.vis_sts.iExtService.i.uniqueTaskActiveId = ext_service_o.uniqueTaskReqId
@@ -208,15 +239,46 @@ class CameraService:
                         )
                         self.cameras[cam_id].stop_and_save_recording_command = True
                     case int(VisTasks.CONNECT):
-                        self.cameras[cam_id].connect_command = True
+                        if self.cameras[cam_id].connection_search_type == ConnectionSearchType.USB_PORT:
+                            print(
+                                f"[SERVICE] Connect request details: cam={cam_id} "
+                                f"searchType={self.cameras[cam_id].connection_search_type.value} "
+                                f"hwPort={self.cameras[cam_id].hw_port}"
+                            )
+                        else:
+                            print(
+                                f"[SERVICE] Connect request details: cam={cam_id} "
+                                f"searchType={self.cameras[cam_id].connection_search_type.value} "
+                                f"hwPort={self.cameras[cam_id].hw_port} "
+                                f"serial={self.cameras[cam_id].camera_serial}"
+                            )
+                        if self.vis_cfg.disconnectOthersOnConnectRequest:
+                            disconnected_camera_ids = self._request_disconnect_for_other_cameras(cam_id)
+                            if disconnected_camera_ids:
+                                self._pending_connect_cam_id = cam_id
+                                print(
+                                    f"[SERVICE] Disconnecting cameras {disconnected_camera_ids} before connecting camera {cam_id} "
+                                    f"because disconnectOthersOnConnectRequest is enabled"
+                                )
+                            else:
+                                self._pending_connect_cam_id = None
+                                self.cameras[cam_id].connect_cmd()
+                        else:
+                            self._pending_connect_cam_id = None
+                            self.cameras[cam_id].connect_cmd()
                     case int(VisTasks.DISCONNECT):
                         self.cameras[cam_id].disconnect_command = True
                     case _:
                         print(f"[SERVICE] Unknown task request: {ext_service_o.taskReqId}")
             else:
-                print(f"[SERVICE] Task request {visTaskToString(ext_service_o.taskReqId)} ignored because another task {visTaskToString(self.vis_sts.iExtService.i.activeTaskId)} is active.")
+                print(
+                    f"[SERVICE] Task request {visTaskToString(ext_service_o.taskReqId)} with unique ID {ext_service_o.uniqueTaskReqId} "
+                    f"is waiting because another task {visTaskToString(self.vis_sts.iExtService.i.activeTaskId)} "
+                    f"with unique ID {self.vis_sts.iExtService.i.uniqueTaskActiveId} is active."
+                )
 
-        self.prev_task_req_id = ext_service_o.taskReqId
+        if accepted_task_request:
+            self.prev_unique_task_req_id = ext_service_o.uniqueTaskReqId
 
     # ----------------------------------------------------------------------
     # MESSAGE HANDLER
@@ -251,9 +313,17 @@ class CameraService:
                     if data is None:
                         print(f"[MQTT] Empty MACHINE_VIS_STATUS payload")
                         return
-                    vis_sts_from_plc: VisSts = from_dict(data_class=VisSts, data=data)
-                    # only copy the iExtService.o part of the status, since that's where the PLC writes heartbeat and step number
-                    self.vis_sts.iExtService.o = vis_sts_from_plc.iExtService.o
+                    i_ext_service = data.get("iExtService") if isinstance(data, dict) else None
+                    if not isinstance(i_ext_service, dict):
+                        print(f"[MQTT] Invalid MACHINE_VIS_STATUS payload: missing iExtService")
+                        return
+
+                    ext_service_outputs = i_ext_service.get("o")
+                    if not isinstance(ext_service_outputs, dict):
+                        print(f"[MQTT] Invalid MACHINE_VIS_STATUS payload: missing iExtService.o")
+                        return
+
+                    self.vis_sts.iExtService.o = from_dict(data_class=IExtServiceOutputs, data=ext_service_outputs)
 
                     self.handleTaskRequest(self.vis_sts.iExtService.o)
 
@@ -396,6 +466,8 @@ class CameraService:
             return STOP_RECORDING_TASK_TIMEOUT_MS
         if task_id == int(VisTasks.STOP_AND_SAVE_RECORDING):
             return STOP_AND_SAVE_TASK_TIMEOUT_MS
+        if task_id == int(VisTasks.CONNECT) and self.vis_cfg.disconnectOthersOnConnectRequest:
+            return CONNECT_AFTER_DISCONNECT_TASK_TIMEOUT_MS
         return DEFAULT_TASK_TIMEOUT_MS
 
 
@@ -423,6 +495,23 @@ class CameraService:
                     and self.cameras[cam_id]._rec_worker_save_success is True
                 )
             case int(VisTasks.CONNECT):
+                if self.vis_cfg.disconnectOthersOnConnectRequest and self._pending_connect_cam_id == cam_id:
+                    if self._all_other_cameras_disconnected(cam_id):
+                        print(f"[SERVICE] All other cameras disconnected; proceeding with connect for camera {cam_id}")
+                        self._pending_connect_cam_id = None
+                        self.cameras[cam_id].connect_cmd()
+                    else:
+                        now_ms = time.time() * 1000
+                        if now_ms - self._last_task_wait_log_ms >= TASK_WAIT_LOG_INTERVAL_MS:
+                            connected_other_camera_ids = [
+                                other_cam_id
+                                for other_cam_id, camera in self.cameras.items()
+                                if other_cam_id != cam_id and camera.state.isConnected
+                            ]
+                            print(
+                                f"[SERVICE] Waiting to connect camera {cam_id} until cameras {connected_other_camera_ids} disconnect"
+                            )
+                            self._last_task_wait_log_ms = now_ms
                 task_was_successful = self.cameras[cam_id].state.isConnected
             case int(VisTasks.DISCONNECT):
                 task_was_successful = not self.cameras[cam_id].state.isConnected
@@ -447,11 +536,12 @@ class CameraService:
 
         if task_was_successful:
             print(f"[SERVICE] Completed active task {visTaskToString(self.vis_sts.iExtService.i.activeTaskId)} with unique ID {self.vis_sts.iExtService.i.uniqueTaskActiveId}")
-            self.prev_task_req_id = self.vis_sts.iExtService.i.activeTaskId
+            self.prev_unique_task_req_id = self.vis_sts.iExtService.i.uniqueTaskActiveId
             self.vis_sts.iExtService.i.lastTaskId = self.vis_sts.iExtService.i.uniqueTaskActiveId
             self.vis_sts.iExtService.i.activeTaskId = 0
             self.vis_sts.iExtService.i.taskStepNum = 0
             self._last_task_wait_log_ms = 0
+            self._pending_connect_cam_id = None
             
 
         elif (
@@ -465,6 +555,7 @@ class CameraService:
             self.vis_sts.iExtService.i.activeTaskId = 0
             self.vis_sts.iExtService.i.taskStepNum = 0
             self._last_task_wait_log_ms = 0
+            self._pending_connect_cam_id = None
 
     async def run_state_machine(self):
         """Main service loop."""
@@ -478,10 +569,23 @@ class CameraService:
             self.checkHeartbeat()
             self.checkAllCamerasDisconnected()
 
+            if (
+                self.vis_sts.iExtService.i.activeTaskId != 0
+                and self.device_data.Is.stepNum != int(DeviceStates.ABORTING)
+            ):
+                self.monitorActiveTask()
+
             if self.device_data.Is.stepNum > int(DeviceStates.RESETTING) and not self.mqtt_is_connected:
+                print(
+                    f"[SERVICE] Entering ABORTING because MQTT is disconnected while stepNum={self.device_data.Is.stepNum}"
+                )
                 self.set_new_step_num(int(DeviceStates.ABORTING))
 
             if self.vis_sts.iExtService.o.deviceCmdReqId == DeviceCmds.KILL.value and self.device_data.Is.stepNum > int(DeviceStates.INACTIVE):
+                print(
+                    f"[SERVICE] Entering ABORTING because deviceCmdReqId={self.vis_sts.iExtService.o.deviceCmdReqId} (KILL) "
+                    f"while stepNum={self.device_data.Is.stepNum}"
+                )
                 self.set_new_step_num(int(DeviceStates.ABORTING))
 
             if self.vis_sts.iExtService.o.deviceCmdReqId == DeviceCmds.CLEAR.value:
@@ -509,7 +613,7 @@ class CameraService:
                         self.connect_mqtt()
                         
                 case int(DeviceStates.IDLE):
-                    self.monitorActiveTask()
+                    pass
 
                 case int(DeviceStates.RUNNING):
                     if self.vis_sts.iExtService.o.deviceCmdReqId == DeviceCmds.STOP.value:
@@ -558,9 +662,19 @@ class CameraService:
                 #self.set_new_step_num(int(DeviceStates.RUNNING))
             #print(f"[MQTT] Updated heartbeatVal to {self.vis_sts.iExtService.i.heartbeatVal}")
         elif self.heartbeat_detected and int(time.time() * 1000) - self.last_heartbate_update_ms > HEARTBEAT_TIMEOUT_MS:
-            if not self.heartbeat_detected:
-                print(f"[MQTT] Heartbeat timeout detected.")
-                self.heartbeat_detected = True
+            print(f"[MQTT] Heartbeat timeout detected.")
+            self.heartbeat_detected = False
+            if DISCONNECT_CAMERAS_ON_HEARTBEAT_TIMEOUT:
+                disconnected_camera_ids = self._request_disconnect_for_all_connected_cameras()
+                self._pending_connect_cam_id = None
+                self.vis_sts.iExtService.i.activeTaskId = 0
+                self.vis_sts.iExtService.i.taskStepNum = 0
+                self._last_task_wait_log_ms = 0
+                print(
+                    f"[SERVICE] Heartbeat timeout: disconnecting cameras {disconnected_camera_ids} instead of entering ABORTING "
+                    f"because DISCONNECT_CAMERAS_ON_HEARTBEAT_TIMEOUT is enabled"
+                )
+            else:
                 self.set_new_step_num(int(DeviceStates.ABORTING))
 
     async def publish_device_data(self):

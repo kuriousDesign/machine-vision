@@ -20,7 +20,7 @@ class CameraService:
         # add status callback to cameras
         self.device_cfg = DeviceCfg()
         self.vis_sts = VisSts()
-        self.vis_cfg = VisCfg()
+        self.vis_cfg = build_vis_cfg()
         self.vis_sts.cfg = self.vis_cfg
         self.vis_sts.cameraStates.append(CameraStatus()) # dummy for index 0
         self.device_data = Device()

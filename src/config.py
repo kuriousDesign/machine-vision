@@ -1,10 +1,9 @@
 from enum import Enum
 import os
-from pickle import STRING
 import sys
 from pathlib import Path
+import copy
 
-from click import STRING
 from dataclasses import dataclass, field
 from device import *
 from cameras.types import *
@@ -14,21 +13,30 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from machine_cfg import MachineIds, getMachineCfg
+from machine_cfg import MachineIds, VisCfg, getVisCfg
 
 # Load .env from parent directory
 from dotenv import load_dotenv
 load_dotenv(ROOT_DIR / ".env")
 
 
-MQTT_FULL_URI = os.getenv("MQTT_LOCAL_BROKER_URI", "ws://localhost:9002/mqtt")
 MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "localhost")
 print(f"MQTT_BROKER_IP: {MQTT_BROKER_IP}")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
 RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/recordings_drive")
-MAX_NUM_CAMERAS = 2
+
+
+def _read_bool_env(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+DISCONNECT_CAMERAS_ON_HEARTBEAT_TIMEOUT = _read_bool_env("DISCONNECT_CAMERAS_ON_HEARTBEAT_TIMEOUT", False)
+
 MAX_NUM_PLUGGED_IN_CAMERAS = 5
 
 HEARTBEAT_TIMEOUT_MS = 3000  # 3 seconds
@@ -64,15 +72,16 @@ def normalize_machine_topic_id(machine_id: str) -> str:
 
 MACHINE_TOPIC_ROOT = f"machine_{normalize_machine_topic_id(MACHINE_ID)}"
 BRIDGE_TOPIC_ROOT = f"bridge_{normalize_machine_topic_id(MACHINE_ID)}"
-MACHINE_CFG = getMachineCfg(MachineIds(MACHINE_ID))
-NUM_CAMERAS = MACHINE_CFG.numCameras
-DEVICE_ID = MACHINE_CFG.deviceId
+VIS_CFG = getVisCfg(MachineIds(MACHINE_ID))
+NUM_CAMERAS = VIS_CFG.numCameras
+DEVICE_ID = VIS_CFG.deviceId
 DEVICE_TOPIC = "ext_service/" + str(DEVICE_ID)
-VISION_DEVICE_TOPIC_PATH = MACHINE_CFG.visionDeviceTopicPath.replace("machine/", f"{MACHINE_TOPIC_ROOT}/", 1)
+VISION_DEVICE_TOPIC_PATH = VIS_CFG.visionDeviceTopicPath.replace("machine/", f"{MACHINE_TOPIC_ROOT}/", 1)
 
 
 def cameraIdToString(camera_id):
-    return MACHINE_CFG.cameraCfgs[camera_id].name if 0 <= camera_id < len(MACHINE_CFG.cameraCfgs) else f"Unknown Camera Id {camera_id}"
+    return VIS_CFG.cameraCfgs[camera_id].name if 0 <= camera_id < len(VIS_CFG.cameraCfgs) else f"Unknown Camera Id {camera_id}"
+
 
 class SubscriptionTopics(str, Enum):
     API_PLC_ACTION_REQ = DEVICE_TOPIC + '/api/action_req',
@@ -110,28 +119,17 @@ def visTaskToString(task):
             return f"Unknown Task {task}"
 
 
-# DO NOT CHANGE: THESE ARE COUPLED TO PLC CLASSES
-@dataclass
-class CameraCfg:
-    serialNumber: str = ""
-    streamingPort: int = False
-    id: int = 0
-
-@dataclass
-class VisCfg:
-    numCameras: int = MACHINE_CFG.numCameras
-    autoConnect: bool = False
-    autoStream: bool = True
-    cameraCfgs: list[CameraCfg] = field(default_factory=lambda: [CameraCfg(serialNumber=MACHINE_CFG.cameraCfgs[i].serialNumber, id=i, streamingPort=8000 + i) for i in range(0, MACHINE_CFG.numCameras)])
+def build_vis_cfg() -> VisCfg:
+    return copy.deepcopy(VIS_CFG)
 
 
 @dataclass
 class VisSts(ExtServiceSts):
-    cfg : VisCfg = field(default_factory=VisCfg)
+    cfg: VisCfg = field(default_factory=build_vis_cfg)
     cameraStates: list[CameraStatus] = field(default_factory=list)
     isRecording: bool = False
     allDisconnected: bool = False
-    pluggedInSerialNumbers:list[str] = field(default_factory=lambda: ["" for _ in range(MAX_NUM_PLUGGED_IN_CAMERAS)])
+    pluggedInSerialNumbers: list[str] = field(default_factory=lambda: ["" for _ in range(MAX_NUM_PLUGGED_IN_CAMERAS)])
 
 @dataclass
 class VisMeta:

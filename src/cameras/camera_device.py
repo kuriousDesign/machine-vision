@@ -25,7 +25,8 @@ import cv2
 import os
 from typing import Optional
 from dataclasses import dataclass
-from cameras.camera_names import get_camera_index_by_serial
+from cameras.camera_names import get_camera_index_by_serial, get_camera_index_by_usb_port
+from machine_cfg import ConnectionSearchType
 from cameras.types import *
 import subprocess
 from dotenv import load_dotenv
@@ -36,9 +37,8 @@ load_dotenv()
 # -----------------------
 CAMERA_INDEX = 2                    # camera device index (v4l2 / Windows device number)
 
-REQUESTED_FPS = 30.0
-CAPTURE_WIDTH = 1920
-CAPTURE_HEIGHT = 1080
+CAPTURE_WIDTH = int(os.environ.get("CAPTURE_WIDTH", "1920"))
+CAPTURE_HEIGHT = int(os.environ.get("CAPTURE_HEIGHT", "1080"))
 
 # Recording settings
 RECORD_FOURCC = cv2.VideoWriter_fourcc(*"mp4v")
@@ -60,6 +60,7 @@ DIAG_INTERVAL = 1.0
 RECORD_WORKER_WAIT_LOG_INTERVAL_MS = 5000
 FFMPEG_CONVERSION_TIMEOUT_SECONDS = 120
 FFMPEG_CONVERSION_PRESET = "ultrafast"
+FPS_WARNING_THRESHOLD = 1.0
 
 
 
@@ -67,11 +68,14 @@ FFMPEG_CONVERSION_PRESET = "ultrafast"
 # CameraDevice class
 # -----------------------
 class CameraDevice:
-    def __init__(self, id: int, camera_name: str, camera_serial: int, stream_port: int, auto_connect: bool = False, auto_start_stream: bool = False):
+    def __init__(self, id: int, camera_name: str, camera_serial: int, stream_port: int, auto_connect: bool = False, auto_start_stream: bool = False, hw_port: str = "", connection_search_type: ConnectionSearchType = ConnectionSearchType.SERIAL_NUMBER, requested_fps: int = 30):
         self.id = id
         self.camera_index = 0
         self.camera_name = camera_name
         self.camera_serial = camera_serial
+        self.hw_port = hw_port
+        self.connection_search_type = connection_search_type
+        self.requested_fps = float(requested_fps)
         self.stream_port = stream_port
         self.auto_connect = auto_connect
         self.auto_start_stream = auto_start_stream
@@ -128,6 +132,8 @@ class CameraDevice:
         self._last_ffmpeg_progress_line = ""
         self._capture_fps_estimate: Optional[float] = None
         self._last_capture_frame_time: Optional[float] = None
+        self._read_failures = 0
+        self._logged_first_frame = False
 
         # Stats
         self.stats = {
@@ -267,6 +273,12 @@ class CameraDevice:
     async def open_capture(self):
         """Open the camera device and apply requested settings."""
         try:
+            requested_device = f"/dev/video{self.camera_index}"
+            search_key = self.hw_port if self.connection_search_type == ConnectionSearchType.USB_PORT else self.camera_serial
+            print(
+                f"{self.print_header} Opening capture for {requested_device} "
+                f"(searchType={self.connection_search_type.value}, searchKey={search_key})"
+            )
             # Use V4L2 backend on Linux if available for better behavior:
             # self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
             self.cap = cv2.VideoCapture(self.camera_index)
@@ -276,11 +288,14 @@ class CameraDevice:
             # Set resolution and fps
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
-            self.cap.set(cv2.CAP_PROP_FPS, REQUESTED_FPS)
+            self.cap.set(cv2.CAP_PROP_FPS, self.requested_fps)
 
             # Validate
             if not self.cap.isOpened():
-                print(f"{self.print_header} Failed to open capture device {self.camera_index}")
+                print(
+                    f"{self.print_header} Failed to open capture device {requested_device} "
+                    f"(searchType={self.connection_search_type.value}, searchKey={search_key})"
+                )
                 if self.cap:
                     self.cap.release()
                 self.cap = None
@@ -293,10 +308,20 @@ class CameraDevice:
             actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             self._capture_fps_estimate = None
             self._last_capture_frame_time = None
-            print(f"{self.print_header} Opened. Actual resolution: {actual_w}x{actual_h} @ {actual_fps} FPS (requested {REQUESTED_FPS})")
+            self._read_failures = 0
+            self._logged_first_frame = False
+            print(f"{self.print_header} Opened. Actual resolution: {actual_w}x{actual_h} @ {actual_fps} FPS (requested {self.requested_fps})")
+            if actual_fps > 0 and abs(actual_fps - self.requested_fps) > FPS_WARNING_THRESHOLD:
+                print(
+                    f"{self.print_header} Warning: camera reported {actual_fps} FPS after requesting {self.requested_fps}. "
+                    f"If multi-camera reads fail, lower CAPTURE_WIDTH/CAPTURE_HEIGHT first because the driver may ignore the requested FPS."
+                )
             self.state.videoDeviceNodeString = f"/dev/video{self.camera_index}"
             self.state.isConnected = True
-            print(f"{self.print_header} Camera connected: {self.state.videoDeviceNodeString}")
+            print(
+                f"{self.print_header} Camera connected: {self.state.videoDeviceNodeString} "
+                f"(searchType={self.connection_search_type.value}, searchKey={search_key}, capOpened={self.cap.isOpened()})"
+            )
             return True
 
         except Exception as e:
@@ -493,7 +518,7 @@ class CameraDevice:
             return False
         frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        reported_frame_rate = max(1.0, float(self.cap.get(cv2.CAP_PROP_FPS) or REQUESTED_FPS))
+        reported_frame_rate = max(1.0, float(self.cap.get(cv2.CAP_PROP_FPS) or self.requested_fps))
         estimated_frame_rate = self._capture_fps_estimate if self._capture_fps_estimate and self._capture_fps_estimate > 0 else None
         frame_rate = max(1.0, estimated_frame_rate or reported_frame_rate)
         frame_size = (frame_width, frame_height)
@@ -634,16 +659,28 @@ class CameraDevice:
         return response
 
     def connect_cmd(self, index = None):
+        search_key = self.hw_port if self.connection_search_type == ConnectionSearchType.USB_PORT else self.camera_serial
+        print(
+            f"{self.print_header} Connect requested "
+            f"(current=/dev/video{self.camera_index}, searchType={self.connection_search_type.value}, searchKey={search_key})"
+        )
         if index is None:
-            cam_index = get_camera_index_by_serial(self.camera_serial)
+            if self.connection_search_type == ConnectionSearchType.USB_PORT:
+                cam_index = get_camera_index_by_usb_port(self.hw_port)
+            else:
+                cam_index = get_camera_index_by_serial(self.camera_serial)
         else:
             cam_index = index
 
         if cam_index is None:
-            print(f"{self.print_header} Cannot connect: camera with serial {self.camera_serial} not found")
+            print(f"{self.print_header} Cannot connect: camera with {self.connection_search_type.value} {search_key} not found")
             return
+        print(
+            f"{self.print_header} Connect resolved "
+            f"(searchType={self.connection_search_type.value}, searchKey={search_key}, resolved=/dev/video{cam_index})"
+        )
         if(cam_index != self.camera_index):
-            print(f"{self.print_header} Camera index is changing to: /dev/video{cam_index}")
+            print(f"{self.print_header} Camera index is changing to: /dev/video{cam_index} (resolved from {self.connection_search_type.value} {self.hw_port if self.connection_search_type == ConnectionSearchType.USB_PORT else self.camera_serial})")
         self.camera_index = cam_index
         self.state.videoDeviceNodeString = f"/dev/video{self.camera_index}"
         self.connect_command = True
@@ -699,11 +736,23 @@ class CameraDevice:
 
                     if not ret:
                         # failed to grab frame -> try to reconnect
-                        print(f"{self.print_header} Failed to read frame; disconnecting.")
+                        self._read_failures += 1
+                        print(
+                            f"{self.print_header} Failed to read frame; disconnecting "
+                            f"(device={self.state.videoDeviceNodeString}, readFailures={self._read_failures}, capOpened={self.cap.isOpened() if self.cap else False})"
+                        )
                         await self.close_capture()
                         await asyncio.sleep(0.5)
                         self.state.isConnected = False
                         continue
+
+                    if not self._logged_first_frame:
+                        self._logged_first_frame = True
+                        shape = getattr(frame, "shape", None)
+                        print(
+                            f"{self.print_header} First frame read succeeded "
+                            f"(device={self.state.videoDeviceNodeString}, shape={shape})"
+                        )
 
                     # Update stats & shared buffer
                     self.stats["captured"] += 1
