@@ -1,0 +1,22 @@
+services:
+  machine-vision-stream-only:
+    image: machine-vision-machine-vision:latest
+    command: ["python", "src/service_stream_only_supervisor.py"]
+    container_name: machine-vision-stream-only
+    network_mode: host
+    privileged: true
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      STREAM_ONLY_CAMERA_IDS: "0,1,2,3"
+      STREAM_ONLY_DEFAULT_GROUP: "mixer"
+      STREAM_ONLY_REQUESTED_FPS: "10"
+    volumes:
+      - ./src:/app/src
+      - ${RECORDINGS_DIR:-/recordings_drive}:${RECORDINGS_DIR:-/recordings_drive}
+      - /run/udev:/run/udev:ro
+      - /dev:/dev
+    group_add:
+      - video
+      - plugdev
