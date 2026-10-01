@@ -14,7 +14,7 @@ import paho.mqtt.client as mqtt
 STREAM_GROUPS = {
     "mixer": {"label": "Mixer", "camera_ids": [2, 3]},
     "screener": {"label": "Screener", "camera_ids": [0]},
-    "extruder": {"label": "Extruder", "camera_ids": [1]},
+    "extruder": {"label": "Extruder and Beakers", "camera_ids": [1, 2]},
 }
 
 
