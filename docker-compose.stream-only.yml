@@ -9,9 +9,10 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      STREAM_ONLY_CAMERA_IDS: "0,1,2,3"
-      STREAM_ONLY_DEFAULT_GROUP: "mixer"
-      STREAM_ONLY_REQUESTED_FPS: "10"
+      STREAM_ONLY_CAMERA_IDS: "${STREAM_ONLY_CAMERA_IDS:-0}"
+      STREAM_ONLY_DEFAULT_GROUP: "${STREAM_ONLY_DEFAULT_GROUP:-screener}"
+      STREAM_ONLY_GROUP_CONTROL_ENABLED: "${STREAM_ONLY_GROUP_CONTROL_ENABLED:-false}"
+      STREAM_ONLY_REQUESTED_FPS: "${STREAM_ONLY_REQUESTED_FPS:-30}"
     volumes:
       - ./src:/app/src
       - ${RECORDINGS_DIR:-/recordings_drive}:${RECORDINGS_DIR:-/recordings_drive}

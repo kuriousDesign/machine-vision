@@ -157,6 +157,13 @@ def _parse_selected_camera_ids(raw_camera_ids: str | None) -> list[int] | None:
     return [int(camera_id.strip()) for camera_id in stripped_value.split(",") if camera_id.strip()]
 
 
+def _read_bool_env(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _build_camera_env(base_env: dict[str, str], cam_cfg, requested_fps: int, machine_id: str) -> dict[str, str]:
     camera_env = base_env.copy()
     normalized_machine_id = normalize_machine_topic_id(machine_id)
@@ -209,6 +216,20 @@ def _build_available_groups(vis_cfg, selected_camera_ids: list[int] | None) -> d
     return available_groups
 
 
+def _build_always_on_group(vis_cfg, selected_camera_ids: list[int] | None) -> dict[str, dict]:
+    configured_camera_ids = [cam_cfg.id for cam_cfg in vis_cfg.cameraCfgs]
+    camera_ids = selected_camera_ids if selected_camera_ids is not None else configured_camera_ids
+    if not camera_ids:
+        raise ValueError("STREAM_ONLY_CAMERA_IDS must select at least one camera")
+    unknown_camera_ids = sorted(set(camera_ids) - set(configured_camera_ids))
+    if unknown_camera_ids:
+        raise ValueError(f"Unknown camera IDs in STREAM_ONLY_CAMERA_IDS: {unknown_camera_ids}")
+    if len(camera_ids) != len(set(camera_ids)):
+        raise ValueError("STREAM_ONLY_CAMERA_IDS must not contain duplicate camera IDs")
+
+    return {"always": {"label": "Always-on", "camera_ids": camera_ids}}
+
+
 def _terminate_processes(processes: list[subprocess.Popen]) -> None:
     for process in processes:
         if process.poll() is None:
@@ -235,7 +256,12 @@ def main() -> int:
     vis_cfg = build_vis_cfg()
     selected_camera_ids = _parse_selected_camera_ids(os.getenv("STREAM_ONLY_CAMERA_IDS"))
     camera_cfg_by_id = {cam_cfg.id: cam_cfg for cam_cfg in vis_cfg.cameraCfgs}
-    available_groups = _build_available_groups(vis_cfg, selected_camera_ids)
+    group_control_enabled = _read_bool_env("STREAM_ONLY_GROUP_CONTROL_ENABLED", True)
+    available_groups = (
+        _build_available_groups(vis_cfg, selected_camera_ids)
+        if group_control_enabled
+        else _build_always_on_group(vis_cfg, selected_camera_ids)
+    )
 
     if not available_groups:
         print("[STREAM_ONLY_SUPERVISOR] No camera groups available for current selection; exiting")
@@ -245,7 +271,11 @@ def main() -> int:
     base_env = os.environ.copy()
     processes: list[subprocess.Popen] = []
     active_group_key: str | None = None
-    group_controller = StreamGroupController(MACHINE_ID, available_groups, requested_fps)
+    group_controller = (
+        StreamGroupController(MACHINE_ID, available_groups, requested_fps)
+        if group_control_enabled
+        else None
+    )
 
     def start_group(group_key: str) -> list[subprocess.Popen]:
         next_processes: list[subprocess.Popen] = []
@@ -268,17 +298,28 @@ def main() -> int:
     def handle_signal(signum, _frame):
         print(f"[STREAM_ONLY_SUPERVISOR] Received signal {signum}; stopping camera workers")
         _terminate_processes(processes)
-        group_controller.stop()
+        if group_controller is not None:
+            group_controller.stop()
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    group_controller.start()
+    if group_controller is not None:
+        group_controller.start()
+    else:
+        print(
+            "[STREAM_ONLY_SUPERVISOR] Group control disabled; "
+            f"streaming configured cameras continuously: {available_groups['always']['camera_ids']}"
+        )
 
     try:
         while True:
-            requested_group_key = group_controller.get_requested_group_key()
+            requested_group_key = (
+                group_controller.get_requested_group_key()
+                if group_controller is not None
+                else "always"
+            )
             if requested_group_key != active_group_key:
                 if processes:
                     print(
@@ -290,7 +331,8 @@ def main() -> int:
 
                 processes = start_group(requested_group_key)
                 active_group_key = requested_group_key
-                group_controller.mark_group_active(active_group_key)
+                if group_controller is not None:
+                    group_controller.mark_group_active(active_group_key)
 
             exited_processes = [process for process in processes if process.poll() is not None]
             if exited_processes:
@@ -302,13 +344,15 @@ def main() -> int:
                 _terminate_processes(processes)
                 processes = []
                 active_group_key = None
-                group_controller.mark_group_stopped()
+                if group_controller is not None:
+                    group_controller.mark_group_stopped()
                 time.sleep(1)
                 continue
             time.sleep(1)
     finally:
         _terminate_processes(processes)
-        group_controller.stop()
+        if group_controller is not None:
+            group_controller.stop()
 
 
 if __name__ == "__main__":

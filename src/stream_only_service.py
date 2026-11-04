@@ -50,6 +50,7 @@ class StreamOnlyService:
 
         self.current_device_path = ""
         self.cap: cv2.VideoCapture | None = None
+        self._next_camera_scan_at = 0.0
         self._next_restart_allowed_at_ms = 0.0
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
@@ -82,8 +83,16 @@ class StreamOnlyService:
 
     def _resolve_camera_index(self):
         if self.cfg.connection_search_type == ConnectionSearchType.USB_PORT:
-            return get_camera_index_by_usb_port(self.cfg.camera_hw_port, force_refresh=True)
-        return get_camera_index_by_serial(self.cfg.camera_serial, force_refresh=True)
+            return get_camera_index_by_usb_port(self.cfg.camera_hw_port, force_refresh=False)
+        return get_camera_index_by_serial(self.cfg.camera_serial, force_refresh=False)
+
+    def _resolve_camera_index_if_due(self):
+        now = time.monotonic()
+        if self.cap is not None and now < self._next_camera_scan_at:
+            return self.camera.camera_index
+
+        self._next_camera_scan_at = now + max(self.cfg.poll_period_ms, 1) / 1000
+        return self._resolve_camera_index()
 
     async def _open_capture(self, camera_index: int, device_path: str):
         print(f"[STREAM_ONLY] Opening MJPEG capture for camera {self.cfg.camera_id} from {device_path}")
@@ -221,7 +230,7 @@ class StreamOnlyService:
         )
 
         while True:
-            resolved_camera_index = self._resolve_camera_index()
+            resolved_camera_index = self._resolve_camera_index_if_due()
             is_plugged_in = resolved_camera_index is not None
             resolved_device_path = f"/dev/video{resolved_camera_index}" if resolved_camera_index is not None else ""
 
