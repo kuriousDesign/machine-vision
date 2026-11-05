@@ -54,11 +54,12 @@ The stream-only compose file runs the camera workers without the PLC-driven
 recording service. By default, it continuously streams the Screener (camera 0)
 and reconnects when the camera is unplugged or its capture fails. MQTT/UI group
 switching is disabled for this deployment; camera status is still published.
-The requested capture rate defaults to 30 FPS and can be overridden with
+The requested capture rate defaults to 10 FPS and can be overridden with
 `STREAM_ONLY_REQUESTED_FPS` in `.env`. Actual FPS may be lower depending on the
 camera and USB bandwidth. The camera capture remains at 1280x720, while MJPEG
 streams are downscaled to a maximum of 640x360 to reduce browser decode and
-network load when viewing multiple cameras.
+network load when viewing multiple cameras. Raising the requested FPS increases
+the number of frames each viewer must decode.
 
 On the other IPC, set these values in that IPC's `.env` before starting the
 same compose file to stream the other three cameras simultaneously:

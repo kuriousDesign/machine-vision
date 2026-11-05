@@ -109,7 +109,7 @@ def build_stream_only_config() -> StreamOnlyConfig:
         camera_serial=camera_serial,
         camera_hw_port=camera_hw_port,
         stream_port=_read_int_env("STREAM_ONLY_STREAM_PORT", 8000 + camera_id),
-        requested_fps=_read_int_env("STREAM_ONLY_REQUESTED_FPS", 30),
+        requested_fps=_read_int_env("STREAM_ONLY_REQUESTED_FPS", 10),
         connection_search_type=connection_search_type,
         auto_stream=_read_bool_env("STREAM_ONLY_AUTO_STREAM", True),
         status_publish_enabled=_read_bool_env("STREAM_ONLY_STATUS_PUBLISH_ENABLED", True),
