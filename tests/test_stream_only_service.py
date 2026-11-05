@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -54,3 +55,13 @@ def test_stream_sends_only_new_camera_frames():
     assert stream_only_service._is_new_frame(100, None)
     assert not stream_only_service._is_new_frame(100, 100)
     assert not stream_only_service._is_new_frame(None, 100)
+
+
+def test_stream_frame_is_downscaled_without_upscaling():
+    full_size_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    downscaled = stream_only_service._resize_stream_frame(full_size_frame)
+
+    assert downscaled.shape == (360, 640, 3)
+
+    smaller_frame = np.zeros((180, 320, 3), dtype=np.uint8)
+    assert stream_only_service._resize_stream_frame(smaller_frame) is smaller_frame

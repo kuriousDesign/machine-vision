@@ -16,10 +16,22 @@ from stream_status_publisher import StreamStatusPublisher
 
 CAPTURE_WIDTH = 1280
 CAPTURE_HEIGHT = 720
+STREAM_OUTPUT_MAX_WIDTH = 640
+STREAM_OUTPUT_MAX_HEIGHT = 360
 
 
 def _is_new_frame(frame_timestamp_ms: int | None, last_streamed_timestamp_ms: int | None) -> bool:
     return frame_timestamp_ms is not None and frame_timestamp_ms != last_streamed_timestamp_ms
+
+
+def _resize_stream_frame(frame):
+    height, width = frame.shape[:2]
+    scale = min(1.0, STREAM_OUTPUT_MAX_WIDTH / width, STREAM_OUTPUT_MAX_HEIGHT / height)
+    if scale == 1.0:
+        return frame
+
+    output_size = (round(width * scale), round(height * scale))
+    return cv2.resize(frame, output_size, interpolation=cv2.INTER_AREA)
 
 
 @dataclass
@@ -200,7 +212,12 @@ class StreamOnlyService:
                     await asyncio.sleep(frame_interval_seconds)
                     continue
 
-                ok, jpeg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                stream_frame = _resize_stream_frame(frame)
+                ok, jpeg = cv2.imencode(
+                    ".jpg",
+                    stream_frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 80],
+                )
                 if not ok:
                     await asyncio.sleep(frame_interval_seconds)
                     continue
