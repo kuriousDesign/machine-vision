@@ -47,3 +47,10 @@ def test_connected_camera_rescans_after_poll_interval(monkeypatch):
     assert service._resolve_camera_index_if_due() == 1
     assert resolved_ids == [1]
     assert service._next_camera_scan_at == 101.0
+
+
+def test_stream_sends_only_new_camera_frames():
+    assert stream_only_service._is_new_frame(101, 100)
+    assert stream_only_service._is_new_frame(100, None)
+    assert not stream_only_service._is_new_frame(100, 100)
+    assert not stream_only_service._is_new_frame(None, 100)

@@ -9,7 +9,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 # 2. Install System Deps + USB/Hardware Support
 # v4l-utils is included so you can use 'v4l2-ctl' to debug cameras
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends \
     build-essential \
     ffmpeg \
     libsm6 \

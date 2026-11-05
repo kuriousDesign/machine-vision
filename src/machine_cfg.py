@@ -76,9 +76,9 @@ def getVisCfg(machine_id: MachineIds) -> VisCfg:
                 disconnectOthersOnConnectRequest=True,
                 cameraCfgs=[
                     CameraCfg(name="Screener", id=0, streamingPort=8000, hwPort="3-4.4"),
-                    CameraCfg(name="Extruder", id=1, streamingPort=8001, hwPort="3-9.2"),
-                    CameraCfg(name="Beakers", id=2, streamingPort=8002, hwPort="3-9.3"),
-                    CameraCfg(name="Mixing Bowl", id=3, streamingPort=8003, hwPort="3-9.4"),
+                    CameraCfg(name="Extruder", id=1, streamingPort=8001, hwPort="1-4.4"),
+                    CameraCfg(name="Beakers", id=2, streamingPort=8002, hwPort="1-3.4"),
+                    CameraCfg(name="Mixing Bowl", id=3, streamingPort=8003, hwPort="1-2.4"),
                 ]
             )
         case _:

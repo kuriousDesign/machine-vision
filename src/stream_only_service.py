@@ -18,6 +18,10 @@ CAPTURE_WIDTH = 1280
 CAPTURE_HEIGHT = 720
 
 
+def _is_new_frame(frame_timestamp_ms: int | None, last_streamed_timestamp_ms: int | None) -> bool:
+    return frame_timestamp_ms is not None and frame_timestamp_ms != last_streamed_timestamp_ms
+
+
 @dataclass
 class StreamOnlyCameraRuntime:
     id: int
@@ -180,19 +184,25 @@ class StreamOnlyService:
             },
         )
         await response.prepare(request)
+        last_streamed_timestamp_ms: int | None = None
+        frame_interval_seconds = 1.0 / max(self.cfg.requested_fps, 1)
 
         try:
             while self.camera.state.isStreaming and self.camera.state.isConnected:
                 async with self.camera.frame_lock:
                     frame = self.camera.current_frame.copy() if self.camera.current_frame is not None else None
+                    frame_timestamp_ms = self.camera.latest_frame_timestamp_ms
 
-                if frame is None:
-                    await asyncio.sleep(0.01)
+                if frame is None or not _is_new_frame(
+                    frame_timestamp_ms,
+                    last_streamed_timestamp_ms,
+                ):
+                    await asyncio.sleep(frame_interval_seconds)
                     continue
 
                 ok, jpeg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                 if not ok:
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(frame_interval_seconds)
                     continue
 
                 try:
@@ -206,7 +216,8 @@ class StreamOnlyService:
                     print(f"[STREAM_ONLY] MJPEG client write failed for camera {self.cfg.camera_id}: {exc}")
                     break
 
-                await asyncio.sleep(max(0.0, 1.0 / max(self.cfg.requested_fps, 1)))
+                last_streamed_timestamp_ms = frame_timestamp_ms
+                await asyncio.sleep(frame_interval_seconds)
         finally:
             try:
                 await response.write_eof()
